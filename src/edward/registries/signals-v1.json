@@ -1,0 +1,87 @@
+{
+  "version": "1.0",
+  "family": "signal",
+  "entries": [
+    {
+      "id": "benchmark",
+      "description": "Empirical performance measurements, comparative metrics, or quantitative evaluations.",
+      "inclusion_criteria": "Tokens/sec, inference latency, memory footprint, speed comparisons, hardware benchmarks.",
+      "exclusion_criteria": "Vague qualitative praise without measurable figures.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "first-hand-experience",
+      "description": "Personal hands-on trial, direct usage observations, or practitioner notes.",
+      "inclusion_criteria": "Author describing their own setup, what worked/failed when they ran the code, personal lessons.",
+      "exclusion_criteria": "Second-hand reporting of others' claims.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "field-report",
+      "description": "In-depth account of deploying or using a technique or tool in a real-world setting.",
+      "inclusion_criteria": "Production deployments, real project retrospectives, operational hurdles.",
+      "exclusion_criteria": "Toy hello-world walk-throughs.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "tutorial",
+      "description": "Step-by-step instructional guide or how-to walkthrough.",
+      "inclusion_criteria": "Numbered instructions, code walkthroughs explaining how to achieve a specific goal.",
+      "exclusion_criteria": "Pure opinion essays or high-level philosophical musings.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "argument",
+      "description": "A reasoned thesis, position, or debate point defending a claim.",
+      "inclusion_criteria": "Persuasive writing presenting premises and conclusions, counterarguments, or critique.",
+      "exclusion_criteria": "Simple news reporting or factual listings.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "warning",
+      "description": "Caveat, pitfall, security vulnerability, or deprecation notice.",
+      "inclusion_criteria": "Gotchas, security advisories, common failure modes, risk assessments.",
+      "exclusion_criteria": "General neutral tutorials.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "announcement",
+      "description": "Release announcement, new project launch, or feature rollout.",
+      "inclusion_criteria": "Changelogs, product launches, version releases, event announcements.",
+      "exclusion_criteria": "Historical retrospectives or comparative reviews.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "cool-project",
+      "description": "Showcase of an impressive, creative, or novel project, demo, tool, or build.",
+      "inclusion_criteria": "Open-source repositories, creative demos, hobby builds, novel software/hardware hacks, creative engineering.",
+      "exclusion_criteria": "Generic enterprise press releases or routine minor library patch updates.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "data-source",
+      "description": "Primary dataset, collection of records, statistics, public ledger, or reference dataset.",
+      "inclusion_criteria": "Curated datasets, raw data tables, benchmark data dumps, public record repositories, statistics compilations.",
+      "exclusion_criteria": "Incidental citation of a single stat or data point in an article.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    }
+  ]
+}

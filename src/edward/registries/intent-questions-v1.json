@@ -1,0 +1,106 @@
+{
+  "version": "1.0",
+  "description": "Intent questions. An intent answers 'why did I keep this?' rather than 'what is this?'. These ship as editable defaults: rewrite the prompts for your own purposes, or delete these and write your own. Nothing here affects ranking or search order — intents are facets you filter by, never scores that reorder results.",
+  "intents": [
+    {
+      "id": "intent-newsletter",
+      "primitive": "noul",
+      "prompt": "Is this likely useful material for a newsletter, essay, or other public writeup?",
+      "instructions": "Answer Yes if the content contains a claim, number, quotation, or example that could carry a piece of writing — especially something specific and checkable. Answer No for material that is merely interesting in passing, is purely personal reference, or is so general it adds nothing a reader could not guess.",
+      "active": true,
+      "version": "1.0",
+      "label": "newsletter-material",
+      "description_note": "Example intent. Mirrors a personal 'newsletter' folder without assuming you have one."
+    },
+    {
+      "id": "intent-reference",
+      "primitive": "noul",
+      "prompt": "Is this something worth keeping as reference material to look up again later?",
+      "instructions": "Answer Yes for documentation, specifications, tutorials, API references, benchmarks, or durable explanatory material that answers a question you would otherwise have to re-search. Answer No for one-off news, opinion, or commentary with no lasting reference value.",
+      "active": true,
+      "version": "1.0",
+      "label": "reference",
+      "description_note": "Example intent for durable look-up material."
+    },
+    {
+      "id": "intent-try-later",
+      "primitive": "noul",
+      "prompt": "Does this describe something concrete the reader could actually try, install, run, or use?",
+      "instructions": "Answer Yes if there is a specific tool, library, model, technique, or setup that a person could act on with the information given. Answer No for abstract ideas, predictions, or announcements with no actionable path.",
+      "active": true,
+      "version": "1.0",
+      "label": "try-later",
+      "description_note": "Example intent for actionable material you intend to test."
+    },
+    {
+      "id": "intent-essay-seed",
+      "primitive": "noul",
+      "prompt": "Does this contain an original thesis, surprising perspective, or compelling narrative that could seed an essay?",
+      "instructions": "Answer Yes if the core premise, insight, or viewpoint could form the foundation of a new essay, commentary piece, or thought exploration. Answer No for routine updates or purely operational notes.",
+      "active": true,
+      "version": "1.0",
+      "label": "essay-seed",
+      "description_note": "Embryonic thoughts, compelling arguments, or provocative angles suited for longer-form essay writing."
+    },
+    {
+      "id": "intent-deep-dive",
+      "primitive": "noul",
+      "prompt": "Is this worthy of a dedicated research deep dive or extensive study?",
+      "instructions": "Answer Yes if the topic is dense, complex, and warrants scheduled investigation, extensive note-taking, or primary literature exploration.",
+      "active": true,
+      "version": "1.0",
+      "label": "deep-dive",
+      "description_note": "Substantial subjects requiring focused study or multi-source investigation."
+    },
+    {
+      "id": "intent-counterevidence",
+      "primitive": "noul",
+      "prompt": "Does this challenge a common belief or present strong counterevidence to a prevailing narrative?",
+      "instructions": "Answer Yes if the content presents credible dissenting analysis, inconvenient data, or systematic counterarguments against orthodox positions.",
+      "active": true,
+      "version": "1.0",
+      "label": "counterevidence",
+      "description_note": "Contrarian findings, critique of consensus views, or dissenting evidence."
+    },
+    {
+      "id": "intent-fact-check",
+      "primitive": "noul",
+      "prompt": "Does this make specific empirical claims, statistics, or quotes that should be verified or cross-referenced?",
+      "instructions": "Answer Yes if there are hard figures, citations, historical claims, or assertions that invite factual validation before citing.",
+      "active": true,
+      "version": "1.0",
+      "label": "fact-check",
+      "description_note": "Content containing claims or numbers that need verification before being cited."
+    },
+    {
+      "id": "intent-tool-eval",
+      "primitive": "noul",
+      "prompt": "Is this a tool, framework, or model to benchmark and evaluate against alternatives?",
+      "instructions": "Answer Yes if this is software, hardware, or an AI tool that you plan to test, benchmark, or compare against existing solutions.",
+      "active": true,
+      "version": "1.0",
+      "label": "tool-eval",
+      "description_note": "Software or hardware to systematically test or benchmark against alternatives."
+    },
+    {
+      "id": "intent-inspiration",
+      "primitive": "noul",
+      "prompt": "Is this an exceptionally cool, creative, or beautiful artifact that provides design or craft inspiration?",
+      "instructions": "Answer Yes for inspiring UI designs, impressive hacks, delightful creative tech demos, elegant codebases, or artistic achievements.",
+      "active": true,
+      "version": "1.0",
+      "label": "inspiration",
+      "description_note": "Creative, aesthetic, or craftsmanship inspiration for future builds."
+    },
+    {
+      "id": "intent-dismiss",
+      "primitive": "noul",
+      "prompt": "Is this content low-value — hype, engagement bait, or substance-free commentary?",
+      "instructions": "Answer Yes for content that makes no checkable claim, restates a press release, or exists mainly to attract attention. Answer No for anything with a real claim, number, or example, even if you disagree with it. Be conservative: answering Yes here is a judgment that the material is not worth keeping.",
+      "active": false,
+      "version": "1.0",
+      "label": "dismiss",
+      "description_note": "Opt-in. Disabled by default because it invites deleting things; the tool should not suggest discarding your material until you ask it to."
+    }
+  ]
+}

@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://edward.local/schemas/evidence-packet-v1.json",
+  "title": "Edward Evidence Packet v1",
+  "description": "Standard schema for bounded evidence packets exported from Edward for agent or LLM synthesis.",
+  "type": "object",
+  "required": ["type", "schema_version", "query", "created_at", "items"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "const": "evidence-packet"
+    },
+    "schema_version": {
+      "type": "string",
+      "const": "1"
+    },
+    "query": {
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "limit": { "type": "integer" },
+        "intent_filter": { "type": "string" },
+        "topic_filter": { "type": "string" },
+        "form_filter": { "type": "string" },
+        "min_relevance": { "type": "number" }
+      },
+      "additionalProperties": true
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "text"],
+        "properties": {
+          "id": { "type": "string" },
+          "kind": {
+            "type": "string",
+            "enum": ["finding", "resource", "capture", "note"]
+          },
+          "text": { "type": "string" },
+          "assertion_role": {
+            "type": "string",
+            "enum": [
+              "source-claim",
+              "direct-quotation",
+              "agent-conclusion",
+              "personal-belief",
+              "personal-observation",
+              "question",
+              "hypothesis",
+              "connection"
+            ]
+          },
+          "review_state": {
+            "type": "string",
+            "enum": [
+              "unreviewed",
+              "reviewed",
+              "approved",
+              "corrected",
+              "disputed",
+              "dismissed",
+              "superseded"
+            ]
+          },
+          "confidence": {
+            "type": ["number", "null"],
+            "minimum": 0.0,
+            "maximum": 1.0
+          },
+          "relevance_score": {
+            "type": ["number", "null"]
+          },
+          "source": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "url": { "type": "string" },
+              "title": { "type": "string" },
+              "origin_namespace": { "type": "string" },
+              "origin_id": { "type": "string" },
+              "retrieved_at": { "type": "string" }
+            },
+            "additionalProperties": true
+          },
+          "supporting_passages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["passage"],
+              "properties": {
+                "passage": { "type": "string" },
+                "locator": { "type": "object" },
+                "content_hash": { "type": "string" }
+              }
+            }
+          },
+          "user_notes": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "labels": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "entities": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "gaps_and_disagreements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": { "type": "string", "enum": ["conflict", "gap", "uncertainty"] },
+          "description": { "type": "string" },
+          "involved_ids": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

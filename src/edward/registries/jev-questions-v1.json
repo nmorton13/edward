@@ -1,0 +1,251 @@
+{
+  "version": "1.0",
+  "questions": [
+    {
+      "id": "primary-form",
+      "primitive": "choice",
+      "prompt": "What is the primary form of this content?",
+      "instructions": "Select exactly one form that best describes the main document structure. If none match clearly or the content is mixed/unclear, select 'other'.",
+      "options": [
+        {"id": "article", "label": "Article or Blog Post"},
+        {"id": "paper", "label": "Academic Research Paper / Preprint"},
+        {"id": "repository", "label": "Code Repository or Software Tool"},
+        {"id": "x-post", "label": "Microblog Post or Social Thread"},
+        {"id": "email-note", "label": "Email Message or Forward"},
+        {"id": "personal-note", "label": "Personal Scratchpad or Direct Note"},
+        {"id": "research-report", "label": "Structured Research Report"},
+        {"id": "product", "label": "Commercial Product or Service"},
+        {"id": "documentation", "label": "Technical Documentation or Manual"},
+        {"id": "other", "label": "Other or Unclassified"}
+      ],
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "topic-ai",
+      "primitive": "noul",
+      "prompt": "Is this content substantially about artificial intelligence, machine learning, or neural models?",
+      "instructions": "Answer Yes if AI, ML, LLMs, or related technologies are a primary focus. Answer No if AI is only briefly mentioned as an analogy or passing reference.",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "topic-local-ai",
+      "primitive": "noul",
+      "prompt": "Is this content substantially about local models, on-device AI, self-hosted inference, or private local workflows?",
+      "instructions": "Answer Yes if the content specifically addresses running models locally, local hardware, llama.cpp, Ollama, local weights, or on-device evaluation. Answer No if it only discusses cloud API models.",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "topic-coding",
+      "primitive": "noul",
+      "prompt": "Is this content substantially about software development, coding tools, engineering practices, or programming languages?",
+      "instructions": "Answer Yes if software architecture, source code, developer tooling, or programming practices are a central subject.",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "signal-benchmark",
+      "primitive": "noul",
+      "prompt": "Does this content contain empirical benchmarks, quantitative performance metrics, or systematic test results?",
+      "instructions": "Answer Yes if specific numerical benchmarks, latency/throughput metrics, accuracy tables, or experimental comparisons are provided.",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "signal-first-hand-experience",
+      "primitive": "noul",
+      "prompt": "Does this content reflect direct, first-hand practitioner experience, troubleshooting, or implementation results?",
+      "instructions": "Answer Yes if the author describes direct personal usage, debugging, building, or observing actual behavior rather than merely summarizing third-party news or press releases.",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "signal-tutorial",
+      "primitive": "noul",
+      "prompt": "Is this content structured as a step-by-step how-to, recipe, tutorial, or setup guide?",
+      "instructions": "Answer Yes if it provides actionable instructions for reproducing a setup, building an application, or configuring an environment.",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "signal-warning",
+      "primitive": "noul",
+      "prompt": "Does this content highlight critical pitfalls, security risks, post-mortems, or warnings?",
+      "instructions": "Answer Yes if the primary value is highlighting failure modes, security hazards, caveats, or lessons learned.",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "topic-llm-agents",
+      "primitive": "noul",
+      "prompt": "Is this content substantially about LLM agents, multi-agent frameworks, tool use, or autonomous AI systems?",
+      "instructions": "Answer Yes if agent loops, tool calling, autonomous workflows, or agentic architectures are a primary subject.",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "topic-dev-tools",
+      "primitive": "noul",
+      "prompt": "Is this content substantially about developer tooling, compilers, package managers, IDEs, or CLI utilities?",
+      "instructions": "Answer Yes if developer workflows, editors, build systems, terminals, package managers, or developer utilities are central.",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "topic-apple-silicon",
+      "primitive": "noul",
+      "prompt": "Is this content substantially about Apple Silicon architecture, unified memory, Metal, or Mac hardware performance?",
+      "instructions": "Answer Yes if M-series architecture, Mac hardware benchmarks, MLX on Apple chips, or Apple-specific hardware engineering are featured.",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "topic-privacy",
+      "primitive": "noul",
+      "prompt": "Is this content substantially about data privacy, encryption, local-first computing, or digital sovereignty?",
+      "instructions": "Answer Yes if user privacy, cryptography, local data ownership, telemetry blocking, or surveillance resistance are a central theme.",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "topic-writing",
+      "primitive": "noul",
+      "prompt": "Is this content substantially about writing craft, essay composition, note-taking methods, or knowledge organization?",
+      "instructions": "Answer Yes if writing technique, research synthesis, note systems (Zettelkasten/PKM), or essay structure are central.",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "topic-energy-grid",
+      "primitive": "noul",
+      "prompt": "Is this content substantially about the electric power grid, power transmission, utility rates, or energy capacity?",
+      "instructions": "Answer Yes if electrical grids (PJM, ERCOT, etc.), power reliability, data center energy demand, substations, or electricity pricing are primary subjects.",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "topic-econ-policy",
+      "primitive": "noul",
+      "prompt": "Is this content substantially about economic policy, utility regulation, public finance, or municipal subsidies?",
+      "instructions": "Answer Yes if public utility commissions, tax abatements, municipal revenue, tariff design, or economic regulatory policies are central.",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "topic-austrian-econ",
+      "primitive": "noul",
+      "prompt": "Is this content substantially about Austrian economics, sound money, spontaneous order, or market cycle theory?",
+      "instructions": "Answer Yes if Austrian school principles (Mises, Hayek, Rothbard), monetary debasement, capital theory, or market price discovery are explored.",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "topic-bitcoin",
+      "primitive": "noul",
+      "prompt": "Is this content substantially about Bitcoin, proof-of-work, cryptographic money, or decentralized protocols?",
+      "instructions": "Answer Yes if Bitcoin architecture, mining, Lightning Network, UTXO model, self-custody, or BTC monetary properties are central.",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "topic-systems",
+      "primitive": "noul",
+      "prompt": "Is this content substantially about operating systems, kernels, low-level systems programming, or Unix internals?",
+      "instructions": "Answer Yes if OS architecture, Linux/BSD kernels, memory allocators, filesystems, eBPF, system calls, or low-level systems engineering are primary subjects.",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "topic-gaming",
+      "primitive": "noul",
+      "prompt": "Is this content substantially about video games, game engine tech, game design theory, or retro computing?",
+      "instructions": "Answer Yes if game development, graphics engines, physics, game mechanics, retro hardware, or playable interactive simulations are central.",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "topic-philosophy",
+      "primitive": "noul",
+      "prompt": "Is this content substantially about philosophy, epistemology, ethics, philosophy of mind, or rationality?",
+      "instructions": "Answer Yes if epistemological questions, moral reasoning, philosophy of mind, rationalist discourse, or intellectual history are central.",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "topic-politics",
+      "primitive": "noul",
+      "prompt": "Is this content substantially about political commentary, institutional analysis, civic governance, or political economy?",
+      "instructions": "Answer Yes if civic debates, institutional structure, freedom of expression, state capacity, or political commentary are the main subject.",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "topic-creative-tech",
+      "primitive": "noul",
+      "prompt": "Is this content substantially about creative technology, novel computational art, ingenious experiments, or cool tech demos?",
+      "instructions": "Answer Yes if generative art, novel UI experiments, demoscene, hardware hacks, creative AI mashups, or playful computing are featured.",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "signal-field-report",
+      "primitive": "noul",
+      "prompt": "Does this content present an in-depth field report, production retrospective, or real-world deployment account?",
+      "instructions": "Answer Yes if the author shares lessons learned from real-world, production, or field deployments rather than toy examples.",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "signal-argument",
+      "primitive": "noul",
+      "prompt": "Does this content present a reasoned thesis, persuasive argument, or structured debate point defending a claim?",
+      "instructions": "Answer Yes if the text systematically defends a specific thesis, critiques counterarguments, or presents philosophical/economic premises.",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "signal-announcement",
+      "primitive": "noul",
+      "prompt": "Is this content a project launch, version release announcement, or product rollout?",
+      "instructions": "Answer Yes if the piece is primarily announcing a new software release, launch, changelog, or availability.",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "signal-cool-project",
+      "primitive": "noul",
+      "prompt": "Does this content showcase an impressive, creative, or novel project, demo, build, or open-source tool?",
+      "instructions": "Answer Yes if it features an inspiring personal build, open-source project, creative tech demo, or novel engineering feat.",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "signal-data-source",
+      "primitive": "noul",
+      "prompt": "Is this content a primary data source, curated dataset, reference table, or statistical archive?",
+      "instructions": "Answer Yes if it provides raw data tables, downloadable datasets, structured statistical collections, or public record archives.",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "evidence-depth",
+      "primitive": "score",
+      "prompt": "Score the depth of concrete empirical or technical evidence provided.",
+      "instructions": "1: Minimal or surface mention without substantiation; 2: Moderate supporting evidence, code snippets, or summarized data; 3: Rigorous data, reproducible methodology, detailed logs, or complete runnable artifacts.",
+      "min_score": 1,
+      "max_score": 3,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "claim-support",
+      "primitive": "noul",
+      "prompt": "Does this source content directly and factually substantiate the stated claim?",
+      "instructions": "Answer Yes if the text contains clear evidence, empirical data, or explicit statements directly supporting the claim. Answer No if the claim is contradicted, unsupported, or only tangentially related.",
+      "active": true,
+      "version": "1.0"
+    }
+  ]
+}

@@ -1,0 +1,87 @@
+{
+  "version": "1.0",
+  "family": "form",
+  "entries": [
+    {
+      "id": "article",
+      "description": "A prose web article, blog post, or journalistic piece.",
+      "inclusion_criteria": "Standalone web essays, tutorials, medium posts, news articles.",
+      "exclusion_criteria": "Academic papers with formal peer-review citations, raw repositories.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "paper",
+      "description": "Academic research paper, preprint, or formal technical report.",
+      "inclusion_criteria": "ArXiv preprints, conference proceedings, peer-reviewed journal articles, formal PDFs.",
+      "exclusion_criteria": "Informal blog posts or product announcements.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "repository",
+      "description": "Source code repository, library, or open-source software project.",
+      "inclusion_criteria": "GitHub, GitLab, or Git repos, code libraries, CLI tools, software packages.",
+      "exclusion_criteria": "Blog posts discussing software without linking to the primary repo.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "x-post",
+      "description": "A post or microblog update on X (Twitter).",
+      "inclusion_criteria": "X/Twitter status updates, single tweets, or threads.",
+      "exclusion_criteria": "Long-form essays or independent websites.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "email-note",
+      "description": "A message sent via email, especially self-sent research notes.",
+      "inclusion_criteria": "Gmail self-sent messages, forwarded links with personal comments.",
+      "exclusion_criteria": "Direct instant messaging or chat transcripts.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "personal-note",
+      "description": "Directly entered human thought, observation, or unlinked note.",
+      "inclusion_criteria": "Raw text notes, fleeting thoughts, essay seeds entered via edward add --text.",
+      "exclusion_criteria": "External content fetched from URLs.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "research-report",
+      "description": "Structured or unstructured research report authored by an AI agent or analyst.",
+      "inclusion_criteria": "Agent research bundle outputs, deep-dive synthesized summaries.",
+      "exclusion_criteria": "Short informal single-sentence notes.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "product",
+      "description": "Commercial product, SaaS application, or consumer hardware.",
+      "inclusion_criteria": "Landing pages, product specs, commercial tools, pricing pages.",
+      "exclusion_criteria": "Non-commercial pure research repositories.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "other",
+      "description": "An object whose primary form does not match standard registered forms.",
+      "inclusion_criteria": "Miscellaneous or hybrid media formats.",
+      "exclusion_criteria": "Content clearly identifiable as article, paper, repo, x-post, or note.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    }
+  ]
+}

@@ -1,0 +1,168 @@
+{
+  "version": "1.0",
+  "family": "topic",
+  "entries": [
+    {
+      "id": "ai",
+      "description": "Artificial intelligence, machine learning, and neural network technologies.",
+      "inclusion_criteria": "Content focused on AI/ML models, algorithms, training, research, or societal impact.",
+      "exclusion_criteria": "General software engineering without AI/ML components.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "ai/local-models",
+      "description": "Running machine learning and large language models on local consumer hardware.",
+      "inclusion_criteria": "Discussions of Ollama, llama.cpp, MLX, local quantization, on-device inference, or offline AI workflows.",
+      "exclusion_criteria": "Cloud-only API hosted models without local inference context.",
+      "parent": "ai",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "ai/llm-agents",
+      "description": "Autonomous or semi-autonomous LLM-driven agents and tool-calling systems.",
+      "inclusion_criteria": "Agent frameworks, function calling, multi-agent workflows, autonomous coding agents, or planning loops.",
+      "exclusion_criteria": "Simple single-prompt chatbots without agency or tools.",
+      "parent": "ai",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "ai/image-generation",
+      "description": "Diffusion models, GANs, and visual generative AI tools.",
+      "inclusion_criteria": "Stable Diffusion, Flux, Midjourney, ComfyUI, image generation benchmarks or techniques.",
+      "exclusion_criteria": "Non-generative computer vision (e.g., optical character recognition).",
+      "parent": "ai",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "software/coding",
+      "description": "Software development, programming languages, and implementation techniques.",
+      "inclusion_criteria": "Source code examples, architecture discussions, refactoring, algorithms, and design patterns.",
+      "exclusion_criteria": "Hardware-level electronics without programming focus.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "software/developer-tools",
+      "description": "Compilers, package managers, IDEs, terminals, and workflow utilities.",
+      "inclusion_criteria": "Tools like uv, Git, Docker, editors, CLI frameworks, and build systems.",
+      "exclusion_criteria": "Consumer software unrelated to software engineering.",
+      "parent": "software/coding",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "hardware/apple-silicon",
+      "description": "Apple Silicon architecture, unified memory, Metal, and performance benchmarks.",
+      "inclusion_criteria": "M-series chips, unified memory bandwidth, MLX optimization, Apple Silicon performance comparisons.",
+      "exclusion_criteria": "Generic x86 or Intel hardware discussions.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "privacy",
+      "description": "Data privacy, encryption, local-first computing, and data sovereignty.",
+      "inclusion_criteria": "Local data storage, telemetry blocking, privacy regulations, self-hosting for privacy reasons.",
+      "exclusion_criteria": "Public broadcasting and unencrypted data transmission.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "writing",
+      "description": "Essay composition, technical writing, thought structure, and knowledge organization.",
+      "inclusion_criteria": "Writing workflows, outlining methods, prose style, research synthesis, and creative output.",
+      "exclusion_criteria": "Casual social chatter with no writing craft focus.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "infrastructure/energy-grid",
+      "description": "Electric power generation, transmission, regional grids (PJM, ERCOT), and utility rate dynamics.",
+      "inclusion_criteria": "Power grid reliability, electricity rates, data center power demands, substations, energy regulation, and capacity constraints.",
+      "exclusion_criteria": "General environmental essays without energy infrastructure or utility focus.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "economics/policy",
+      "description": "Economic policy, utility regulation, public finance, subsidies, and municipal fiscal impacts.",
+      "inclusion_criteria": "Public utility commissions, commercial tax abatements, municipal revenue, tariff design, economic policy debates, and regulatory capture.",
+      "exclusion_criteria": "Generic corporate earnings reports without policy or public finance relevance.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "economics/austrian",
+      "description": "Austrian economics, spontaneous order, business cycle theory, sound money, and market processes.",
+      "inclusion_criteria": "Mises, Hayek, Rothbard, monetary debasement, capital theory, Austrian business cycle theory, price signals, and subjective value.",
+      "exclusion_criteria": "Standard Keynesian monetary stimulus proposals lacking Austrian economic critique.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "crypto/bitcoin",
+      "description": "Bitcoin, hard money, proof-of-work, peer-to-peer electronic cash, and cryptographic protocols.",
+      "inclusion_criteria": "Bitcoin mining, UTXO architecture, Lightning network, self-custody, monetary properties of BTC, cryptographic proofs, and decentralization.",
+      "exclusion_criteria": "Speculative memecoins or centralized crypto token promotions.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "software/systems",
+      "description": "Operating systems, low-level systems programming, kernels, memory management, and Unix architecture.",
+      "inclusion_criteria": "Linux/BSD kernels, OS architecture, POSIX APIs, memory allocators, filesystems, eBPF, compilers, hardware interfacing, and system calls.",
+      "exclusion_criteria": "High-level web frontend development or casual consumer app reviews.",
+      "parent": "software/coding",
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "gaming",
+      "description": "Video games, game engines, game mechanics design, retro gaming, and interactive simulations.",
+      "inclusion_criteria": "Game architecture, graphics engines, physics, retro hardware, game design theory, procedural generation, and playable tech demos.",
+      "exclusion_criteria": "Gambling or pure esports tournament match scoreboards.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "philosophy",
+      "description": "Philosophy, epistemology, ethics, philosophy of mind, rationality, and history of ideas.",
+      "inclusion_criteria": "Epistemological inquiry, moral philosophy, consciousness, rationalist thought, logic, cognitive philosophy, and intellectual history.",
+      "exclusion_criteria": "Casual inspirational self-help quotes lacking philosophical argumentation.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "politics/commentary",
+      "description": "Political commentary, civic governance, institutional critique, political economy, and societal debates.",
+      "inclusion_criteria": "Institutional analysis, civic debates, political commentary, freedom of expression, state capacity, governance structures, and societal trends.",
+      "exclusion_criteria": "Transient daily election horse-race polling with no lasting analytical substance.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    },
+    {
+      "id": "creative-tech",
+      "description": "Creative technology, novel computational art, ingenious experiments, interactive hacks, and cool demos.",
+      "inclusion_criteria": "Generative art, novel UI experiments, demoscene, hardware hacks, delightful computational curiosities, and creative AI mashups.",
+      "exclusion_criteria": "Standard enterprise B2B SaaS software.",
+      "parent": null,
+      "active": true,
+      "version": "1.0"
+    }
+  ]
+}

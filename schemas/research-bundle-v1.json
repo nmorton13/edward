@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://edward.local/schemas/research-bundle-v1.json",
+  "title": "Edward Research Bundle v1",
+  "description": "Standard payload schema for agent or external research imports into Edward.",
+  "type": "object",
+  "required": ["type", "schema_version", "bundle_id", "title", "sources"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "const": "research-bundle"
+    },
+    "schema_version": {
+      "type": "string",
+      "const": "1"
+    },
+    "bundle_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "idempotency_key": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "brief": {
+      "type": "string"
+    },
+    "agent": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "run_id": { "type": "string" },
+        "model": { "type": "string" },
+        "version": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "summary": {
+      "type": "string"
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["origin"],
+        "anyOf": [
+          { "required": ["identity_key"] },
+          { "required": ["url"] },
+          { "required": ["source_id"] },
+          { "required": ["origin_id"] }
+        ],
+        "properties": {
+          "source_id": { "type": "string" },
+          "identity_key": { "type": "string" },
+          "origin": { "type": "string" },
+          "origin_id": { "type": "string" },
+          "url": { "type": "string" },
+          "title": { "type": "string" },
+          "retrieved_at": { "type": "string", "format": "date-time" },
+          "extracted_text": { "type": "string" },
+          "content_hash": { "type": "string" },
+          "snapshot": { "type": "string" },
+          "snapshot_hash": { "type": "string" },
+          "acquired_by": {
+            "type": "object",
+            "properties": {
+              "kind": { "type": "string" },
+              "tool": { "type": "string" }
+            },
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["statement"],
+        "properties": {
+          "statement": { "type": "string", "minLength": 1 },
+          "assertion_role": {
+            "type": "string",
+            "enum": [
+              "source-claim",
+              "direct-quotation",
+              "agent-conclusion",
+              "personal-belief",
+              "personal-observation",
+              "question",
+              "hypothesis",
+              "connection"
+            ]
+          },
+          "source_url": { "type": "string" },
+          "supporting_passage": { "type": "string" },
+          "locator": { "type": "object" },
+          "agent_confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+          "labels": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "entities": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "open_questions": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "suggested_intents": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "additionalProperties": false
+}
