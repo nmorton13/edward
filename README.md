@@ -2,19 +2,13 @@
 
 **A personal research memory and writing workspace.**
 
-Edward keeps sources, why you saved them, and useful evidence together. Capture a link, email yourself a note, or add a document; Edward queues work to fetch and index it when you run `process` (or schedule that command). Later, retrieve it with exact search, semantic discovery, or evidence-backed questions.
+Edward keeps sources, why you saved them, and useful evidence together. Capture a link, email yourself a note, or add a document; your agent can fetch, extract, and index it for you. Later, search your library or ask a question and get evidence you can trace to its source.
 
 ---
 
 ## Why Edward?
 
-I started Edward because I am constantly bookmarking things I like on X, sending links and notes to myself in email, reading papers, and collecting articles. And I always had trouble keeping track of it.
-
-I tried all sorts of different apps and systems—read-it-later queues, bookmark managers, personal wikis, and browser tab dumps. But they almost always failed in one of two ways:
-1. **The Hoarder's Graveyard**: Loose link dumpers where things go in and are never seen again, because search is poor or the context of *why* you saved it is lost.
-2. **The High-Friction Tax**: Overly rigid knowledge bases that demand manual tagging, filing, and folder management up front when you just want to save something interesting and move on.
-
-Like [Mentat](https://github.com/nmorton13/mentat), my opinionated memory system for personal thoughts, Edward is built around a workflow I wanted for research. Captures are quick; queued fetching, extraction, and indexing can be run when you choose or automated with scripts and cron.
+I built Edward—and [Mentat](https://github.com/nmorton13/mentat)—to fit the way I think about memory. Thoughts I’m working through go in Mentat; sources and evidence I want to use go in Edward. I tried read-it-later tools, wikis, Obsidian, and newer LLM “second brains,” but none fit that mental model. I want to know where I put something and be able to use it later.
 
 The point of saving something is rarely just to own the link. Most of what I save, I want to return to later:
 - To seed an essay or commentary piece.
