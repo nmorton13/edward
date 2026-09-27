@@ -347,3 +347,80 @@ def test_cli_export_packet(cli_runner: CliRunner, tmp_path: Path):
     saved_packet = json.loads(out_file.read_text(encoding="utf-8"))
     assert saved_packet["type"] == "evidence-packet"
     assert len(saved_packet["items"]) >= 1
+
+
+def test_cli_chunk_show_and_annotate(cli_runner: CliRunner):
+    from edward.cli import get_services
+    from edward.services.search import rebuild_search_index
+
+    db, _ = get_services()
+    with db.transaction() as conn:
+        conn.execute(
+            """INSERT INTO resources (id, identity_key, canonical_url, title, review_state,
+                is_deleted, created_at, updated_at)
+                VALUES ('res_chunk_test', 'url:chunk-test', 'https://example.com/chunk-test', 'Chunk Test Title',
+                'unreviewed', 0, '2026-01-01', '2026-01-01');"""
+        )
+        conn.execute(
+            """INSERT INTO resource_contents (id, resource_id, content_hash, clean_text,
+                char_count, extractor, extractor_version, created_at)
+                VALUES ('rc_chunk_test', 'res_chunk_test', 'hash', 'Full text content', 17, 'text', '1', '2026-01-01');"""
+        )
+        conn.execute(
+            """INSERT INTO resource_chunks (id, resource_content_id, resource_id,
+                chunk_index, text, locator_json, token_count, created_at)
+                VALUES ('chk_state_machine', 'rc_chunk_test', 'res_chunk_test', 0,
+                'Hierarchical deterministic state machines require strict verification.',
+                '{"chunk_index": 0}', 8, '2026-01-01');"""
+        )
+        rebuild_search_index(conn)
+
+    # Search for chunk
+    search_res = cli_runner.invoke(
+        app,
+        ["search", "deterministic state machines", "--json"],
+    )
+    assert search_res.exit_code == 0
+    search_data = json.loads(search_res.stdout)
+    assert search_data["count"] >= 1
+    chunk_item = next(
+        (item for item in search_data["results"] if item.get("object_type") == "chunk"),
+        None,
+    )
+    assert chunk_item is not None
+    assert chunk_item["id"] == "chk_state_machine"
+    assert chunk_item["resource_id"] == "res_chunk_test"
+    assert chunk_item["canonical_url"] == "https://example.com/chunk-test"
+
+    # 1. Show chunk via JSON
+    show_json_res = cli_runner.invoke(app, ["show", "chk_state_machine", "--json"])
+    assert show_json_res.exit_code == 0
+    show_data = json.loads(show_json_res.stdout)
+    assert show_data["id"] == "chk_state_machine"
+    assert show_data["resource_id"] == "res_chunk_test"
+    assert "text" in show_data
+    assert "resource" in show_data
+    assert show_data["resource"]["title"] == "Chunk Test Title"
+
+    # 2. Show chunk via plain text
+    show_plain_res = cli_runner.invoke(app, ["show", "chk_state_machine"])
+    assert show_plain_res.exit_code == 0
+    assert "Chunk:" in show_plain_res.stdout
+    assert "chk_state_machine" in show_plain_res.stdout
+    assert "Text:" in show_plain_res.stdout
+
+    # 3. Annotate chunk
+    ann_res = cli_runner.invoke(
+        app,
+        ["annotate", "chk_state_machine", "--note", "Important chunk note", "--json"],
+    )
+    assert ann_res.exit_code == 0
+    ann_data = json.loads(ann_res.stdout)
+    assert ann_data["status"] == "annotated"
+
+    # 4. Verify annotation is visible on show
+    show_again = cli_runner.invoke(app, ["show", "chk_state_machine", "--json"])
+    assert show_again.exit_code == 0
+    show_again_data = json.loads(show_again.stdout)
+    assert len(show_again_data["annotations"]) == 1
+    assert show_again_data["annotations"][0]["content"] == "Important chunk note"

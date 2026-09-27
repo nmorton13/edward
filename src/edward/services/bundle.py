@@ -829,13 +829,14 @@ def ingest_markdown_report(
     # Create Resource
     res_id = generate_id("res")
     ident_key = f"report:{req_hash[:16]}"
+    u_hash = hashlib.sha256(ident_key.encode("utf-8")).hexdigest()
     conn.execute(
         """
         INSERT INTO resources (
-            id, identity_key, title, primary_form, review_state, is_deleted, created_at, updated_at
-        ) VALUES (?, ?, ?, 'research-report', 'unreviewed', 0, ?, ?);
+            id, identity_key, url_hash, title, primary_form, review_state, is_deleted, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 'research-report', 'unreviewed', 0, ?, ?);
         """,
-        (res_id, ident_key, report_title, now_iso, now_iso),
+        (res_id, ident_key, u_hash, report_title, now_iso, now_iso),
     )
 
     # Create Capture

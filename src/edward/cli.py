@@ -296,7 +296,7 @@ def add_command(
 
 @app.command("show")
 def show_command(
-    target_id: str = typer.Argument(..., help="Capture, Resource, or Finding ID"),
+    target_id: str = typer.Argument(..., help="Capture, Resource, Chunk, or Finding ID"),
     json_mode: bool = typer.Option(False, "--json", help="Output machine-readable JSON on stdout"),
 ) -> None:
     """Inspect full details of an item by ID."""
@@ -411,6 +411,54 @@ def show_command(
                         )
             return
 
+        # Check chunks
+        chk_row = conn.execute(
+            "SELECT * FROM resource_chunks WHERE id = ?;", (target_id,)
+        ).fetchone()
+        if chk_row:
+            data = dict(chk_row)
+            res_id = data.get("resource_id")
+            parent_res = None
+            if res_id:
+                parent_res = conn.execute(
+                    "SELECT * FROM resources WHERE id = ?;", (res_id,)
+                ).fetchone()
+                if parent_res:
+                    data["resource"] = dict(parent_res)
+                labels = conn.execute(
+                    "SELECT label_id, source FROM object_labels WHERE object_type = 'resource' AND object_id = ?;",
+                    (res_id,),
+                ).fetchall()
+                data["labels"] = [dict(lbl) for lbl in labels]
+                intents = conn.execute(
+                    "SELECT intent, source FROM intents WHERE object_type = 'resource' AND object_id = ? AND is_active = 1;",
+                    (res_id,),
+                ).fetchall()
+                data["intents"] = [dict(it) for it in intents]
+            data["annotations"] = [
+                a.model_dump() for a in get_annotations(conn, "chunk", target_id)
+            ]
+
+            if json_mode:
+                output_json_payload(data)
+            else:
+                out_console.print(f"[bold cyan]Chunk:[/bold cyan] {target_id}")
+                out_console.print(f"Index: {data.get('chunk_index')}")
+                res_dict = data.get("resource")
+                if res_dict:
+                    out_console.print(f"Resource ID: {res_dict.get('id')}")
+                    out_console.print(f"Resource Title: {res_dict.get('title') or '(No title)'}")
+                    out_console.print(f"Resource URL: {res_dict.get('canonical_url') or '(None)'}")
+                out_console.print("\n[bold]Text:[/bold]")
+                out_console.print(data.get("text") or "(No text)")
+                if data["annotations"]:
+                    out_console.print("\nAnnotations:")
+                    for a in data["annotations"]:
+                        out_console.print(
+                            f"  - [{a['annotation_type']}] {a['content']} (by {a['author']})"
+                        )
+            return
+
     handle_error(f"Object with ID '{target_id}' not found", exit_code=1, as_json=json_mode)
 
 
@@ -445,6 +493,8 @@ def search_command(
             out_console.print(
                 f"\n{idx}. [{item.object_type.upper()}] [cyan]{item.id}[/cyan] - {item.title or '(Untitled)'}"
             )
+            if item.canonical_url:
+                out_console.print(f"   URL: {item.canonical_url}")
             if item.snippet:
                 out_console.print(f"   {item.snippet}")
 
@@ -477,6 +527,11 @@ def annotate_command(
         if not obj_type:
             f = conn.execute("SELECT id FROM findings WHERE id = ?;", (target_id,)).fetchone()
             obj_type = "finding" if f else None
+        if not obj_type:
+            chk = conn.execute(
+                "SELECT id FROM resource_chunks WHERE id = ?;", (target_id,)
+            ).fetchone()
+            obj_type = "chunk" if chk else None
 
         if not obj_type:
             handle_error(f"Object with ID '{target_id}' not found", exit_code=1, as_json=json_mode)
@@ -507,7 +562,7 @@ def remove_intent_command(
     db, _ = get_services()
     try:
         with db.transaction() as conn:
-            for obj_type in ["resource", "capture", "finding"]:
+            for obj_type in ["resource", "capture", "finding", "chunk"]:
                 try:
                     remove_intent(conn, obj_type, target_id, intent, actor="human")
                     break

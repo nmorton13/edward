@@ -139,7 +139,11 @@ def add_annotation(
     table = (
         "captures"
         if object_type == "capture"
-        else ("resources" if object_type == "resource" else "findings")
+        else (
+            "resources"
+            if object_type == "resource"
+            else ("resource_chunks" if object_type == "chunk" else "findings")
+        )
     )
     row = conn.execute(f"SELECT id FROM {table} WHERE id = ?;", (object_id,)).fetchone()
     if not row:
@@ -228,7 +232,11 @@ def add_label(
     table = (
         "captures"
         if object_type == "capture"
-        else ("resources" if object_type == "resource" else "findings")
+        else (
+            "resources"
+            if object_type == "resource"
+            else ("resource_chunks" if object_type == "chunk" else "findings")
+        )
     )
     row = conn.execute(f"SELECT id FROM {table} WHERE id = ?;", (object_id,)).fetchone()
     if not row:

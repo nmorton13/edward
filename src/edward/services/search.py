@@ -250,7 +250,35 @@ def search_lexical(
             sd.labels,
             sd.entities,
             bm25(search_documents) AS score,
-            snippet(search_documents, -1, '<b>', '</b>', '...', 15) AS snippet
+            snippet(search_documents, -1, '<b>', '</b>', '...', 15) AS snippet,
+            CASE
+                WHEN sd.object_type = 'chunk' THEN (
+                    SELECT rc.resource_id FROM resource_chunks rc WHERE rc.id = sd.object_id
+                )
+                WHEN sd.object_type = 'resource' THEN sd.object_id
+                WHEN sd.object_type = 'finding' THEN (
+                    SELECT f.resource_id FROM findings f WHERE f.id = sd.object_id
+                )
+                WHEN sd.object_type = 'capture' THEN (
+                    SELECT cr.resource_id FROM capture_resources cr WHERE cr.capture_id = sd.object_id LIMIT 1
+                )
+                ELSE NULL
+            END AS resource_id,
+            CASE
+                WHEN sd.object_type = 'chunk' THEN (
+                    SELECT r.canonical_url FROM resource_chunks rc JOIN resources r ON r.id = rc.resource_id WHERE rc.id = sd.object_id
+                )
+                WHEN sd.object_type = 'resource' THEN (
+                    SELECT r.canonical_url FROM resources r WHERE r.id = sd.object_id
+                )
+                WHEN sd.object_type = 'finding' THEN (
+                    SELECT r.canonical_url FROM findings f JOIN resources r ON r.id = f.resource_id WHERE f.id = sd.object_id
+                )
+                WHEN sd.object_type = 'capture' THEN (
+                    SELECT r.canonical_url FROM capture_resources cr JOIN resources r ON r.id = cr.resource_id WHERE cr.capture_id = sd.object_id LIMIT 1
+                )
+                ELSE NULL
+            END AS canonical_url
         FROM search_documents sd
         WHERE search_documents MATCH ?
           AND NOT (
@@ -393,6 +421,8 @@ def search_lexical(
                 score=round(row["score"], 4) if row["score"] is not None else None,
                 labels=labels_list,
                 entities=entities_list,
+                resource_id=row["resource_id"],
+                canonical_url=row["canonical_url"],
             )
         )
 

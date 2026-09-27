@@ -381,3 +381,79 @@ Detailed report on agent workflows, tool use, and cognitive memory.
         assert "error" in sync_data
 
     asyncio.run(_test())
+
+
+def test_mcp_chunk_show_search_and_annotate(test_db: Database, test_blob_store: BlobStore) -> None:
+    """Verify that chunks can be searched with parent links, inspected via edward_show, and annotated."""
+
+    async def _test() -> None:
+        server = create_mcp_server(db=test_db, blob_store=test_blob_store)
+
+        with test_db.transaction() as conn:
+            conn.execute(
+                """INSERT INTO resources (id, identity_key, canonical_url, title, review_state,
+                    is_deleted, created_at, updated_at)
+                    VALUES ('res_mcp_chunk', 'url:mcp-chunk', 'https://example.com/mcp-chunk', 'MCP Chunk Resource',
+                    'unreviewed', 0, '2026-01-01', '2026-01-01');"""
+            )
+            conn.execute(
+                """INSERT INTO resource_contents (id, resource_id, content_hash, clean_text,
+                    char_count, extractor, extractor_version, created_at)
+                    VALUES ('rc_mcp_chunk', 'res_mcp_chunk', 'hash', 'Clean text', 10, 'text', '1', '2026-01-01');"""
+            )
+            conn.execute(
+                """INSERT INTO resource_chunks (id, resource_content_id, resource_id,
+                    chunk_index, text, locator_json, token_count, created_at)
+                    VALUES ('chk_mcp_test', 'rc_mcp_chunk', 'res_mcp_chunk', 0,
+                    'Superconducting qubits demonstrate high coherence in isolated cryostats.',
+                    '{"chunk_index": 0}', 9, '2026-01-01');"""
+            )
+            from edward.services.search import rebuild_search_index
+
+            rebuild_search_index(conn)
+
+        # 1. Search for chunk - verify resource_id and canonical_url
+        search_res = await server.call_tool("edward_search", {"query": "Superconducting qubits"})
+        assert not search_res.is_error
+        search_data = json.loads(search_res.content[0].text)
+        assert search_data["count"] >= 1
+        chunk_hit = next(
+            (item for item in search_data["results"] if item["id"] == "chk_mcp_test"),
+            None,
+        )
+        assert chunk_hit is not None
+        assert chunk_hit["object_type"] == "chunk"
+        assert chunk_hit["resource_id"] == "res_mcp_chunk"
+        assert chunk_hit["canonical_url"] == "https://example.com/mcp-chunk"
+
+        # 2. Show chunk via edward_show
+        show_res = await server.call_tool("edward_show", {"object_id": "chk_mcp_test"})
+        assert not show_res.is_error
+        show_data = json.loads(show_res.content[0].text)
+        assert show_data["type"] == "chunk"
+        assert show_data["data"]["id"] == "chk_mcp_test"
+        assert show_data["data"]["resource_id"] == "res_mcp_chunk"
+        assert "resource" in show_data["data"]
+        assert show_data["data"]["resource"]["title"] == "MCP Chunk Resource"
+        assert "Superconducting qubits" in show_data["data"]["text"]
+
+        # 3. Annotate chunk via edward_annotate
+        ann_res = await server.call_tool(
+            "edward_annotate",
+            {"object_id": "chk_mcp_test", "note": "Crucial quantum hardware snippet"},
+        )
+        assert not ann_res.is_error
+        ann_data = json.loads(ann_res.content[0].text)
+        assert ann_data["status"] == "annotated"
+
+        # 4. Verify annotation is retrieved on show
+        show_again = await server.call_tool("edward_show", {"object_id": "chk_mcp_test"})
+        assert not show_again.is_error
+        show_again_data = json.loads(show_again.content[0].text)
+        assert len(show_again_data["data"]["annotations"]) == 1
+        assert (
+            show_again_data["data"]["annotations"][0]["content"]
+            == "Crucial quantum hardware snippet"
+        )
+
+    asyncio.run(_test())

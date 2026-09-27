@@ -134,6 +134,8 @@ class SearchItem(BaseModel):
     labels: list[str] = Field(default_factory=list)
     entities: list[str] = Field(default_factory=list)
     created_at: str | None = None
+    resource_id: str | None = None
+    canonical_url: str | None = None
 
 
 class SearchResponse(BaseModel):

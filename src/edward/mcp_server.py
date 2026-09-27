@@ -128,7 +128,7 @@ def create_mcp_server(
 
     @server.tool(name="edward_show")
     def edward_show(object_id: str) -> dict[str, Any]:
-        """Inspect the full details of any object (resource, capture, or finding) by ID.
+        """Inspect the full details of any object (resource, capture, chunk, or finding) by ID.
 
         Returns metadata, clean extracted text, source URL, author, labels, active intents,
         linked captures, and annotations.
@@ -204,6 +204,34 @@ def create_mcp_server(
                     a.model_dump() for a in get_annotations(conn, "finding", object_id)
                 ]
                 return {"type": "finding", "data": data}
+
+            # Check chunk
+            chk_row = conn.execute(
+                "SELECT * FROM resource_chunks WHERE id = ?;", (object_id,)
+            ).fetchone()
+            if chk_row:
+                data = dict(chk_row)
+                res_id = data.get("resource_id")
+                if res_id:
+                    parent_res = conn.execute(
+                        "SELECT * FROM resources WHERE id = ?;", (res_id,)
+                    ).fetchone()
+                    if parent_res:
+                        data["resource"] = dict(parent_res)
+                    labels = conn.execute(
+                        "SELECT label_id, source FROM object_labels WHERE object_type = 'resource' AND object_id = ?;",
+                        (res_id,),
+                    ).fetchall()
+                    data["labels"] = [dict(lbl) for lbl in labels]
+                    intents = conn.execute(
+                        "SELECT intent, source FROM intents WHERE object_type = 'resource' AND object_id = ? AND is_active = 1;",
+                        (res_id,),
+                    ).fetchall()
+                    data["intents"] = [dict(it) for it in intents]
+                data["annotations"] = [
+                    a.model_dump() for a in get_annotations(conn, "chunk", object_id)
+                ]
+                return {"type": "chunk", "data": data}
 
         return {"error": f"Object with ID '{object_id}' not found"}
 
@@ -367,6 +395,10 @@ def create_mcp_server(
                 obj_type = "capture"
             elif conn.execute("SELECT 1 FROM findings WHERE id = ?;", (object_id,)).fetchone():
                 obj_type = "finding"
+            elif conn.execute(
+                "SELECT 1 FROM resource_chunks WHERE id = ?;", (object_id,)
+            ).fetchone():
+                obj_type = "chunk"
             else:
                 return {"error": f"Object with ID '{object_id}' not found"}
 
@@ -399,6 +431,10 @@ def create_mcp_server(
                 obj_type = "capture"
             elif conn.execute("SELECT 1 FROM findings WHERE id = ?;", (object_id,)).fetchone():
                 obj_type = "finding"
+            elif conn.execute(
+                "SELECT 1 FROM resource_chunks WHERE id = ?;", (object_id,)
+            ).fetchone():
+                obj_type = "chunk"
 
             if not obj_type:
                 return {"error": f"Object with ID '{object_id}' not found"}
@@ -422,6 +458,10 @@ def create_mcp_server(
                 obj_type = "capture"
             elif conn.execute("SELECT 1 FROM findings WHERE id = ?;", (object_id,)).fetchone():
                 obj_type = "finding"
+            elif conn.execute(
+                "SELECT 1 FROM resource_chunks WHERE id = ?;", (object_id,)
+            ).fetchone():
+                obj_type = "chunk"
 
             if not obj_type:
                 return {"error": f"Object with ID '{object_id}' not found"}
