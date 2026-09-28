@@ -1062,6 +1062,8 @@ def process_command(
             f"failed={result['failed']}, pending={result.get('pending', 0)}, "
             f"lost_lease={result.get('lost_lease', 0)}, remaining_pending={result['remaining_pending']}"
         )
+        for reason, count in sorted(result.get("skipped", {}).items()):
+            out_console.print(f"  skipped ({reason}): {count}")
 
 
 @app.command("retry")
@@ -1186,6 +1188,16 @@ def status_command(
         summary_count = conn.execute(
             "SELECT COUNT(DISTINCT resource_id) FROM resource_contents WHERE length(trim(summary)) > 0;"
         ).fetchone()[0]
+        summary_skipped_count = conn.execute(
+            """
+            SELECT COUNT(*) FROM processing_jobs j
+            WHERE j.stage = 'summarize' AND j.status = 'completed'
+              AND NOT EXISTS (
+                  SELECT 1 FROM resource_contents rc
+                  WHERE rc.resource_id = j.resource_id AND length(trim(rc.summary)) > 0
+              );
+            """
+        ).fetchone()[0]
         embedded_resource_count = conn.execute(
             "SELECT COUNT(DISTINCT object_id) FROM embeddings WHERE object_type = 'resource';"
         ).fetchone()[0]
@@ -1202,6 +1214,7 @@ def status_command(
             "attachments": att_count,
             "extracted_resources": extracted_count,
             "summarized_resources": summary_count,
+            "summary_skipped_resources": summary_skipped_count,
             "embedded_resources": embedded_resource_count,
             "embedded_captures": embedded_capture_count,
         },

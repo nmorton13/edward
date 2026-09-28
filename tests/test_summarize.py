@@ -20,6 +20,12 @@ from edward.services.summarize import (
 )
 
 
+def _long(text: str) -> str:
+    """Pad sample text past MIN_SUMMARIZE_CHARS so the summarizer is actually called."""
+    filler = " ".join(f"detail{i}" for i in range(60))
+    return f"{text} {filler}"
+
+
 @pytest.fixture
 def test_db_and_blobs(tmp_path):
     db_file = tmp_path / "test_edward.db"
@@ -144,7 +150,9 @@ def test_summarize_stores_summary(test_db_and_blobs):
         store_resource_content(
             conn,
             "res_sum_1",
-            clean_text="Artificial intelligence has advanced rapidly in recent years. New foundation models enable reasoning and multimodal synthesis across domains.",
+            clean_text=_long(
+                "Artificial intelligence has advanced rapidly in recent years. New foundation models enable reasoning and multimodal synthesis across domains."
+            ),
         )
 
     fake_client = FakeSummarizerClient("AI has advanced rapidly through modern foundation models.")
@@ -200,7 +208,7 @@ def test_private_resource_refused_before_dispatch(test_db_and_blobs, monkeypatch
         store_resource_content(
             conn,
             "res_gmail_1",
-            clean_text="Secret financial discussion over email.",
+            clean_text=_long("Secret financial discussion over email."),
             capture_id="cap_gmail_1",
         )
 
@@ -245,7 +253,7 @@ def test_bundle_summaries_are_preserved(test_db_and_blobs):
         store_resource_content(
             conn,
             "res_bundle_1",
-            clean_text="Detailed report text about energy storage technologies.",
+            clean_text=_long("Detailed report text about energy storage technologies."),
             summary=existing_summary,
             extractor="markdown-report",
         )
@@ -285,7 +293,7 @@ def test_summarize_rerun_is_noop(test_db_and_blobs):
         store_resource_content(
             conn,
             "res_rerun_1",
-            clean_text="Some text about computing architectures.",
+            clean_text=_long("Some text about computing architectures."),
         )
 
     fake_client = FakeSummarizerClient("Summary on first pass.")
@@ -348,7 +356,7 @@ def test_invalid_model_output_recorded_to_diagnostics(test_db_and_blobs, tmp_pat
         store_resource_content(
             conn,
             "res_diag_1",
-            clean_text="Sample text to trigger invalid response handling.",
+            clean_text=_long("Sample text to trigger invalid response handling."),
         )
         enqueue_missing_summarize_jobs(conn)
 
@@ -388,7 +396,7 @@ def test_cli_status_reflects_summarized_resources(test_db_and_blobs, monkeypatch
         store_resource_content(
             conn,
             "res_st_1",
-            clean_text="Text for status test.",
+            clean_text=_long("Text for status test."),
             summary="A stored summary.",
         )
 
@@ -456,10 +464,10 @@ def test_cli_process_summarize_scoping(test_db_and_blobs, monkeypatch):
             (now_iso, now_iso),
         )
         store_resource_content(
-            conn, "res_scope_1", clean_text="Content 1", capture_id="cap_scope_1"
+            conn, "res_scope_1", clean_text=_long("Content 1"), capture_id="cap_scope_1"
         )
         store_resource_content(
-            conn, "res_scope_2", clean_text="Content 2", capture_id="cap_scope_2"
+            conn, "res_scope_2", clean_text=_long("Content 2"), capture_id="cap_scope_2"
         )
 
     fake_client = FakeSummarizerClient("Scoped summary.")
@@ -516,7 +524,7 @@ def test_human_summaries_are_preserved(test_db_and_blobs):
         store_resource_content(
             conn,
             "res_human_1",
-            clean_text="Detailed paper text about neural architectures.",
+            clean_text=_long("Detailed paper text about neural architectures."),
             summary=existing_summary,
             summary_source="human",
             extractor="human",
@@ -557,7 +565,9 @@ def test_legacy_summaries_get_queued_and_replaced(test_db_and_blobs):
         store_resource_content(
             conn,
             "res_legacy_1",
-            clean_text="The West Virginia State Treasurer Office manages the state's financial resources and investments.",
+            clean_text=_long(
+                "The West Virginia State Treasurer Office manages the state's financial resources and investments."
+            ),
             summary=legacy_summary,
             summary_source="legacy",
             extractor="summarize",
@@ -715,3 +725,168 @@ def test_migration_006_backfill_assigns_correct_sources(tmp_path):
         # Verify that model processing job remained completed
         mod_job = conn.execute("SELECT status FROM processing_jobs WHERE id = 'job_mod'").fetchone()
         assert mod_job["status"] == "completed"
+
+
+# --- Skip rules: short text and near-duplicate siblings ---
+
+TWEET = (
+    "Just released Parakeet Redux, a ternary speech-to-text model compressed from "
+    "1.2GB to 178MB. It runs at 113x realtime on CPU and stays within 0.3 WER of the "
+    "original on English, while beating the base model on the 25-language FLEURS "
+    "benchmark. Weights, model card and a small demo app are available today."
+)
+
+
+def _seed_capture(conn, capture_id: str, resources: dict[str, str]) -> None:
+    """One web capture linking the given resources, each with its own clean text."""
+    now_iso = datetime.datetime.now(datetime.UTC).isoformat()
+    conn.execute(
+        """
+        INSERT INTO captures (id, origin_namespace, collection_channel, collector, acquisition_method, retrieved_at, raw_content, review_state, is_deleted, created_at, updated_at)
+        VALUES (?, 'web', 'web', 'test', 'manual', ?, NULL, 'unreviewed', 0, ?, ?);
+        """,
+        (capture_id, now_iso, now_iso, now_iso),
+    )
+    for res_id, text in resources.items():
+        conn.execute(
+            """
+            INSERT INTO resources (id, identity_key, canonical_url, title, review_state, is_deleted, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'unreviewed', 0, ?, ?);
+            """,
+            (
+                res_id,
+                f"url:example.com/{res_id}",
+                f"https://example.com/{res_id}",
+                res_id,
+                now_iso,
+                now_iso,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO capture_resources (capture_id, resource_id, relationship_type, created_at) VALUES (?, ?, 'primary', ?);",
+            (capture_id, res_id, now_iso),
+        )
+        store_resource_content(conn, res_id, clean_text=text, capture_id=capture_id)
+
+
+def _summaries(db) -> dict[str, str | None]:
+    with db.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.id, (SELECT summary FROM resource_contents rc WHERE rc.resource_id = r.id
+                          ORDER BY rc.created_at DESC LIMIT 1) AS summary
+            FROM resources r;
+            """
+        ).fetchall()
+    return {r["id"]: r["summary"] for r in rows}
+
+
+def test_short_text_is_skipped_without_model_call(test_db_and_blobs):
+    db, blob_store = test_db_and_blobs
+    with db.transaction() as conn:
+        _seed_capture(conn, "cap_short", {"res_short": "The daughter is correct. I called this."})
+        assert enqueue_missing_summarize_jobs(conn) == 1
+
+    fake_client = FakeSummarizerClient()
+    res = process_pending_jobs(db, blob_store, stage="summarize", llm_client=fake_client)
+
+    assert fake_client.call_count == 0
+    assert res["completed"] == 1
+    assert res["skipped"] == {"short": 1}
+    assert _summaries(db)["res_short"] is None
+
+    # A rerun leaves the skipped job completed and never calls the model.
+    with db.transaction() as conn:
+        enqueue_missing_summarize_jobs(conn)
+        status = conn.execute(
+            "SELECT status FROM processing_jobs WHERE stage = 'summarize' AND resource_id = 'res_short';"
+        ).fetchone()["status"]
+    assert status == "completed"
+    res = process_pending_jobs(db, blob_store, stage="summarize", llm_client=fake_client)
+    assert res["completed"] == 0
+    assert fake_client.call_count == 0
+
+
+def test_duplicate_sibling_keeps_only_the_longer_resource(test_db_and_blobs):
+    db, blob_store = test_db_and_blobs
+    longer = TWEET + " Built with a custom quantisation pipeline and released under Apache 2.0."
+    with db.transaction() as conn:
+        _seed_capture(conn, "cap_dup", {"res_post": longer, "res_xpage": TWEET})
+        enqueue_missing_summarize_jobs(conn)
+
+    fake_client = FakeSummarizerClient("Parakeet Redux compresses a speech model.")
+    res = process_pending_jobs(db, blob_store, stage="summarize", llm_client=fake_client)
+
+    assert fake_client.call_count == 1
+    assert res["skipped"] == {"duplicate": 1}
+    summaries = _summaries(db)
+    assert summaries["res_post"] == "Parakeet Redux compresses a speech model."
+    assert summaries["res_xpage"] is None
+
+
+def test_identical_siblings_still_summarize_one(test_db_and_blobs):
+    db, blob_store = test_db_and_blobs
+    with db.transaction() as conn:
+        _seed_capture(conn, "cap_same", {"res_a": TWEET, "res_b": TWEET})
+        enqueue_missing_summarize_jobs(conn)
+
+    fake_client = FakeSummarizerClient()
+    res = process_pending_jobs(db, blob_store, stage="summarize", llm_client=fake_client)
+
+    assert fake_client.call_count == 1
+    assert res["skipped"] == {"duplicate": 1}
+    assert sum(1 for s in _summaries(db).values() if s) == 1
+
+
+def test_short_post_with_long_article_summarizes_the_article(test_db_and_blobs):
+    db, blob_store = test_db_and_blobs
+    article = _long(
+        "Python Workers are now generally available on the Cloudflare Developer Platform."
+    )
+    with db.transaction() as conn:
+        _seed_capture(
+            conn,
+            "cap_link",
+            {"res_tweet": "Python Workers are now generally available!", "res_blog": article},
+        )
+        enqueue_missing_summarize_jobs(conn)
+
+    fake_client = FakeSummarizerClient("Cloudflare made Python Workers generally available.")
+    res = process_pending_jobs(db, blob_store, stage="summarize", llm_client=fake_client)
+
+    assert fake_client.call_count == 1
+    assert res["skipped"] == {"short": 1}
+    summaries = _summaries(db)
+    assert summaries["res_blog"] == "Cloudflare made Python Workers generally available."
+    assert summaries["res_tweet"] is None
+
+
+def test_different_siblings_are_both_summarized(test_db_and_blobs):
+    db, blob_store = test_db_and_blobs
+    other = _long("Kev-0.5B is a tiny open source decision model based on Qwen2.5-0.5B.")
+    with db.transaction() as conn:
+        _seed_capture(conn, "cap_two", {"res_one": TWEET, "res_two": other})
+        enqueue_missing_summarize_jobs(conn)
+
+    fake_client = FakeSummarizerClient()
+    res = process_pending_jobs(db, blob_store, stage="summarize", llm_client=fake_client)
+
+    assert fake_client.call_count == 2
+    assert res["skipped"] == {}
+
+
+def test_reconcile_does_not_complete_legacy_summary_jobs(test_db_and_blobs):
+    from edward.services.processor import reconcile_completed_jobs
+
+    db, _ = test_db_and_blobs
+    with db.transaction() as conn:
+        _seed_capture(conn, "cap_legacy", {"res_legacy": _long("Lead text of a page.")})
+        conn.execute(
+            "UPDATE resource_contents SET summary = 'Lead text', summary_source = 'legacy' WHERE resource_id = 'res_legacy';"
+        )
+        enqueue_missing_summarize_jobs(conn)
+        reconcile_completed_jobs(conn)
+        status = conn.execute(
+            "SELECT status FROM processing_jobs WHERE stage = 'summarize' AND resource_id = 'res_legacy';"
+        ).fetchone()["status"]
+    assert status == "pending"

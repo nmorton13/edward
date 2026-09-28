@@ -7,6 +7,7 @@ existing bundle or human summaries, and maintains idempotency on content hash.
 
 import datetime
 import logging
+import re
 import sqlite3
 from typing import Any
 
@@ -23,6 +24,62 @@ from edward.services.privacy import (
 logger = logging.getLogger(__name__)
 
 SUMMARIZE_STAGE = "summarize"
+
+# Below this many characters the text is already shorter than a summary would be.
+MIN_SUMMARIZE_CHARS = 300
+
+# A resource whose words are mostly contained in a longer sibling (same capture) is
+# the same content saved twice, typically a t.co link that resolves back to the post.
+DUPLICATE_OVERLAP = 0.8
+
+SKIP_SHORT = "short"
+SKIP_DUPLICATE = "duplicate"
+
+_WORD = re.compile(r"\w{3,}")
+
+
+def _word_set(text: str) -> set[str]:
+    return set(_WORD.findall(text.lower()))
+
+
+def summary_skip_reason(conn: sqlite3.Connection, resource_id: str, text: str) -> str | None:
+    """Why a resource should not be sent to the summarizer, or None when it should.
+
+    Deterministic: of two near-identical siblings, only the smaller one is ever
+    skipped (ties broken by length, then id), so one of each pair is still summarized.
+    """
+    clean = (text or "").strip()
+    if len(clean) < MIN_SUMMARIZE_CHARS:
+        return SKIP_SHORT
+
+    words = _word_set(clean)
+    if not words:
+        return SKIP_SHORT
+    own_rank = (len(words), len(clean), resource_id)
+
+    siblings = conn.execute(
+        """
+        SELECT DISTINCT r.id AS resource_id,
+               (SELECT rc.clean_text FROM resource_contents rc
+                WHERE rc.resource_id = r.id ORDER BY rc.created_at DESC LIMIT 1) AS clean_text
+        FROM capture_resources mine
+        JOIN capture_resources other
+          ON other.capture_id = mine.capture_id AND other.resource_id != mine.resource_id
+        JOIN resources r ON r.id = other.resource_id AND r.is_deleted = 0
+        WHERE mine.resource_id = ?;
+        """,
+        (resource_id,),
+    ).fetchall()
+    for sib in siblings:
+        sib_text = (sib["clean_text"] or "").strip()
+        sib_words = _word_set(sib_text)
+        if not sib_words:
+            continue
+        if (len(sib_words), len(sib_text), sib["resource_id"]) <= own_rank:
+            continue
+        if len(words & sib_words) / len(words) >= DUPLICATE_OVERLAP:
+            return SKIP_DUPLICATE
+    return None
 
 
 class SummarizerDisabledError(Exception):

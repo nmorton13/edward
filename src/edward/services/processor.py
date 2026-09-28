@@ -391,6 +391,9 @@ def _load_job_context(conn: sqlite3.Connection, job: dict[str, Any]) -> dict[str
         context["summary_source"] = content_row["summary_source"] if content_row else None
         context["content_hash"] = content_row["content_hash"] if content_row else None
         context["input_hash"] = content_row["content_hash"] if content_row else None
+        from edward.services.summarize import summary_skip_reason
+
+        context["skip_reason"] = summary_skip_reason(conn, resource_id, context["text"])
 
         cap_link = conn.execute(
             """
@@ -690,12 +693,14 @@ def _perform_job_work(
             }
 
         text = context.get("text", "").strip()
-        if not text:
+        skip_reason = context.get("skip_reason")
+        if not text or skip_reason:
             return {
                 "status": "completed",
                 "summary": None,
                 "summary_source": None,
                 "preserved": False,
+                "skipped": skip_reason or "short",
                 "input_hash": context.get("input_hash"),
             }
 
@@ -2339,13 +2344,18 @@ def process_pending_jobs(
     capture_id: str | None = None,
     stage: str | None = None,
     llm_client: Any | None = None,
-) -> dict[str, int]:
-    """Process pending background jobs in a loop up to limit using short transaction boundaries."""
+) -> dict[str, Any]:
+    """Process pending background jobs in a loop up to limit using short transaction boundaries.
+
+    ``completed`` includes summarize jobs that were skipped without a model call;
+    ``skipped`` breaks those down by reason (``short``, ``duplicate``).
+    """
     w_id = worker_id or f"worker_{uuid.uuid4().hex[:8]}"
     completed = 0
     failed = 0
     pending = 0
     lost_lease = 0
+    skipped: dict[str, int] = {}
 
     for _ in range(limit):
         # 1. Short transaction: claim next pending job and load context
@@ -2403,6 +2413,9 @@ def process_pending_jobs(
 
         if outcome == "completed":
             completed += 1
+            skip_reason = work_res.get("skipped") if work_res else None
+            if skip_reason:
+                skipped[skip_reason] = skipped.get(skip_reason, 0) + 1
         elif outcome == "failed":
             failed += 1
         elif outcome == "pending":
@@ -2421,6 +2434,7 @@ def process_pending_jobs(
         "pending": pending,
         "lost_lease": lost_lease,
         "remaining_pending": remaining,
+        "skipped": skipped,
     }
 
 
@@ -2628,6 +2642,7 @@ def reconcile_completed_jobs(conn: sqlite3.Connection) -> dict[str, int]:
               SELECT 1 FROM resource_contents rc
               WHERE rc.resource_id = processing_jobs.resource_id
                 AND length(trim(rc.summary)) > 0
+                AND COALESCE(rc.summary_source, '') != 'legacy'
           );
         """,
         (now_iso, now_iso),
