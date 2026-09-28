@@ -103,6 +103,61 @@ def get_default_db_path() -> Path:
     return get_default_data_dir() / "edward.sqlite3"
 
 
+def get_canonical_default_data_dir() -> Path:
+    """Return the un-overridden standard platform data directory (e.g. ~/.edward)."""
+    if (Path.home() / ".edward").exists():
+        path = Path.home() / ".edward"
+    elif sys.platform == "darwin":
+        path = Path.home() / "Library" / "Application Support" / "edward"
+    elif sys.platform == "win32":
+        path = Path(os.environ.get("APPDATA", Path.home())) / "edward"
+    else:
+        path = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "edward"
+    return path.resolve()
+
+
+def is_default_data_dir(data_dir: Path | str | None = None) -> bool:
+    """Check if the provided data dir or current active data dir is the default user library.
+
+    Returns True if no custom scratch directory (e.g. via EDWARD_DATA_DIR) is in use,
+    meaning operations are running against the user's real personal library.
+    """
+    if data_dir is not None:
+        target = Path(data_dir).expanduser().resolve()
+    else:
+        target = get_default_data_dir().resolve()
+    return target == get_canonical_default_data_dir()
+
+
+def is_test_namespace(origin_namespace: str | None) -> bool:
+    """Return True if an origin namespace indicates test or probe data (e.g. 'agent-test', 'test', 'test-run')."""
+    if not origin_namespace:
+        return False
+    ns = origin_namespace.strip().lower()
+    return (
+        ns == "test"
+        or ns.endswith("-test")
+        or ns.startswith("test-")
+        or "-test-" in ns
+        or ns == "testing"
+    )
+
+
+def is_test_name(name: str | None) -> bool:
+    """Return True if a project title or slug indicates a test or probe run."""
+    if not name:
+        return False
+    n = name.strip().lower()
+    return (
+        n == "test"
+        or n.startswith("test-")
+        or n.endswith("-test")
+        or n.startswith("test ")
+        or n.endswith(" test")
+        or "probe" in n
+    )
+
+
 def split_sql_statements(sql: str) -> list[str]:
     """Split a multi-statement SQL script into individual statements safely without committing transactions."""
     statements: list[str] = []

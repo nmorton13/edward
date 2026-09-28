@@ -12,13 +12,14 @@ from edward.mcp_server import create_mcp_server
 
 
 def test_mcp_server_registration(test_db: Database, test_blob_store: BlobStore) -> None:
-    """Verify that all 23 expected tools are registered on the MCPServer."""
+    """Verify that all 24 expected tools are registered on the MCPServer."""
 
     async def _test() -> None:
         server = create_mcp_server(db=test_db, blob_store=test_blob_store)
         expected_tools = {
             "edward_ask",
             "edward_search",
+            "edward_similar",
             "edward_show",
             "edward_export_packet",
             "edward_add",

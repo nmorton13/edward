@@ -20,6 +20,7 @@ investigation at the wrong suspect. Fallbacks now carry a specific reason that
 can be persisted alongside the content.
 """
 
+import html
 import json
 import re
 from dataclasses import dataclass
@@ -64,7 +65,8 @@ def clean_html_simple(html_text: str) -> tuple[str | None, str]:
     title_match = re.search(r"<title[^>]*>(.*?)</title>", html_text, re.IGNORECASE | re.DOTALL)
     title = title_match.group(1).strip() if title_match else None
     if title:
-        title = re.sub(r"\s+", " ", title)
+        title = html.unescape(title)
+        title = re.sub(r"\s+", " ", title).strip()
 
     # Strip script and style blocks
     cleaned = re.sub(
@@ -147,10 +149,13 @@ def _local_fallback(
             error=reason,
         )
     fallback_title, clean = clean_html_simple(raw_html)
+    eff_title = title_hint or fallback_title
+    if eff_title and isinstance(eff_title, str):
+        eff_title = html.unescape(eff_title).strip()
     return ExtractionResult(
         status="completed",
         clean_text=clean,
-        title=title_hint or fallback_title,
+        title=eff_title,
         extractor="local-fallback",
         extractor_version="1.0",
         error=reason,
@@ -174,6 +179,8 @@ def extract_content(url: str, raw_html: str | None = None) -> ExtractionResult:
                 # summarize nests its results under "extracted"; older or
                 # alternate shapes keep them at the top level.
                 title = _payload_field(payload, "title", "name")
+                if title and isinstance(title, str):
+                    title = html.unescape(title).strip()
                 summary = _payload_field(payload, "description", "summary")
                 content = _payload_field(
                     payload, "content", "extracted_content", "text", "clean_text"

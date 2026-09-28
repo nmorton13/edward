@@ -25,6 +25,19 @@ def deterministic_embeddings_for_tests(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EDWARD_EMBEDDING_MODEL", "deterministic-v1")
 
 
+@pytest.fixture(autouse=True)
+def isolate_data_dir_for_tests(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ensure tests never touch the user's real ~/.edward directory."""
+    d = tmp_path / "edward_test_env"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "blobs").mkdir(parents=True, exist_ok=True)
+    (d / "diagnostics").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("EDWARD_DATA_DIR", str(d))
+    monkeypatch.delenv("EDWARD_DB_PATH", raising=False)
+    monkeypatch.setenv("EDWARD_SUMMARIZER_MODE", "disabled")
+    monkeypatch.setenv("EDWARD_ANSWERER_MODE", "disabled")
+
+
 @pytest.fixture
 def test_db(temp_dir: Path) -> Database:
     """Fixture providing a Database instance with migrations applied."""

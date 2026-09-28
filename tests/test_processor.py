@@ -15,6 +15,7 @@ from edward.services.processor import (
     execute_job,
     get_processing_status,
     process_pending_jobs,
+    reconcile_completed_jobs,
     retry_failed_jobs,
 )
 
@@ -314,3 +315,189 @@ def test_full_processing_pipeline(mock_extract, mock_fetch, test_db_and_blobs, m
         assert status["by_status"]["completed"] == 5
         assert status["by_status"]["pending"] == 0
         assert status["by_stage_status"]["resource-fetch"] == {"completed": 1}
+
+
+def test_process_embed_stage_for_linked_capture(test_db_and_blobs):
+    """An empty capture linked to an extracted resource embeds successfully during embed stage."""
+    db, blob_store = test_db_and_blobs
+    now_iso = datetime.datetime.now(datetime.UTC).isoformat()
+
+    with db.transaction() as conn:
+        conn.execute(
+            """
+            INSERT INTO captures (id, origin_namespace, collection_channel, collector, acquisition_method, retrieved_at, raw_content, user_note, created_at, updated_at)
+            VALUES ('cap_proc_1', 'web', 'browser', 'cli', 'manual', ?, '', '', ?, ?);
+            """,
+            (now_iso, now_iso, now_iso),
+        )
+        conn.execute(
+            """
+            INSERT INTO resources (id, identity_key, title, created_at, updated_at)
+            VALUES ('res_proc_1', 'url:proc1', 'Extracted Article', ?, ?);
+            """,
+            (now_iso, now_iso),
+        )
+        conn.execute(
+            """
+            INSERT INTO capture_resources (capture_id, resource_id, created_at)
+            VALUES ('cap_proc_1', 'res_proc_1', ?);
+            """,
+            (now_iso,),
+        )
+        conn.execute(
+            """
+            INSERT INTO resource_contents (id, resource_id, content_hash, clean_text, extractor, extractor_version, char_count, created_at)
+            VALUES ('rc_proc_1', 'res_proc_1', 'hash_proc_1', 'Substantive article content to embed.', 'test', '1.0', 36, ?);
+            """,
+            (now_iso,),
+        )
+        conn.execute(
+            """
+            INSERT INTO processing_jobs (
+                id, job_key, capture_id, stage, status, attempts, max_attempts, available_at, created_at, updated_at
+            ) VALUES ('job_cap_emb', 'embed:cap_proc_1', 'cap_proc_1', 'embed', 'pending', 0, 3, ?, ?, ?);
+            """,
+            (now_iso, now_iso, now_iso),
+        )
+
+    with db.transaction() as conn:
+        res = process_pending_jobs(conn, blob_store, limit=1, stage="embed")
+        assert res["completed"] == 1
+        assert res["failed"] == 0
+
+    with db.connection() as conn:
+        job = conn.execute("SELECT * FROM processing_jobs WHERE id = 'job_cap_emb';").fetchone()
+        assert job["status"] == "completed"
+
+        emb = conn.execute(
+            "SELECT * FROM embeddings WHERE object_type = 'capture' AND object_id = 'cap_proc_1';"
+        ).fetchone()
+        assert emb is not None
+        assert emb["dimensions"] > 0
+        from edward.services.embed import get_capture_embedding_text_and_hash
+
+        text, _ = get_capture_embedding_text_and_hash(conn, "cap_proc_1")
+        assert "Substantive article content to embed." in text
+        import hashlib
+
+        assert emb["input_hash"] == hashlib.sha256(text[:1500].encode("utf-8")).hexdigest()
+
+
+def test_process_embed_stage_fails_when_no_text_or_resources(test_db_and_blobs):
+    """A capture with neither text nor extracted resources fails embed stage and is reported, not silently skipped."""
+    db, blob_store = test_db_and_blobs
+    now_iso = datetime.datetime.now(datetime.UTC).isoformat()
+
+    with db.transaction() as conn:
+        conn.execute(
+            """
+            INSERT INTO captures (id, origin_namespace, collection_channel, collector, acquisition_method, retrieved_at, raw_content, user_note, created_at, updated_at)
+            VALUES ('cap_empty_fail', 'web', 'browser', 'cli', 'manual', ?, '', '', ?, ?);
+            """,
+            (now_iso, now_iso, now_iso),
+        )
+        conn.execute(
+            """
+            INSERT INTO processing_jobs (
+                id, job_key, capture_id, stage, status, attempts, max_attempts, available_at, created_at, updated_at
+            ) VALUES ('job_cap_fail', 'embed:cap_empty_fail', 'cap_empty_fail', 'embed', 'pending', 0, 3, ?, ?, ?);
+            """,
+            (now_iso, now_iso, now_iso),
+        )
+
+    with db.transaction() as conn:
+        res = process_pending_jobs(conn, blob_store, limit=1, stage="embed")
+        assert res["completed"] == 0
+        assert res["failed"] == 1
+
+    with db.connection() as conn:
+        job = conn.execute("SELECT * FROM processing_jobs WHERE id = 'job_cap_fail';").fetchone()
+        assert job["status"] == "failed"
+        assert "Capture has no text or extracted resources to embed" in (job["last_error"] or "")
+
+        emb = conn.execute(
+            "SELECT * FROM embeddings WHERE object_type = 'capture' AND object_id = 'cap_empty_fail';"
+        ).fetchone()
+        assert emb is None
+
+
+def test_extract_stage_triggers_parent_capture_embed_job(test_db_and_blobs):
+    """Completing an extract stage automatically enqueues embed for linked parent captures."""
+    db, blob_store = test_db_and_blobs
+    now_iso = datetime.datetime.now(datetime.UTC).isoformat()
+
+    raw_html = b"<html><head><title>Linked Story</title></head><body><p>Linked body story</p></body></html>"
+    raw_hash, blob_path = blob_store.store_bytes(raw_html)
+
+    with db.transaction() as conn:
+        conn.execute(
+            """
+            INSERT INTO captures (id, origin_namespace, collection_channel, collector, acquisition_method, retrieved_at, raw_content, user_note, created_at, updated_at)
+            VALUES ('cap_parent', 'web', 'browser', 'cli', 'manual', ?, '', '', ?, ?);
+            """,
+            (now_iso, now_iso, now_iso),
+        )
+        conn.execute(
+            """
+            INSERT INTO resources (id, identity_key, canonical_url, title, created_at, updated_at)
+            VALUES ('res_child', 'url:child', 'https://example.com/child', 'Linked Story', ?, ?);
+            """,
+            (now_iso, now_iso),
+        )
+        conn.execute(
+            """
+            INSERT INTO source_snapshots (id, resource_id, content_hash, headers_json, blob_path, size_bytes, created_at)
+            VALUES ('snp_child', 'res_child', ?, '{"content-type": "text/html"}', ?, ?, ?);
+            """,
+            (raw_hash, str(blob_path), len(raw_html), now_iso),
+        )
+        conn.execute(
+            """
+            INSERT INTO capture_resources (capture_id, resource_id, created_at)
+            VALUES ('cap_parent', 'res_child', ?);
+            """,
+            (now_iso,),
+        )
+        conn.execute(
+            """
+            INSERT INTO processing_jobs (
+                id, job_key, resource_id, stage, status, attempts, max_attempts, available_at, created_at, updated_at
+            ) VALUES ('job_ext_child', 'extract:res_child', 'res_child', 'extract', 'pending', 0, 3, ?, ?, ?);
+            """,
+            (now_iso, now_iso, now_iso),
+        )
+
+    with db.transaction() as conn:
+        res = process_pending_jobs(conn, blob_store, limit=1, stage="extract")
+        assert res["completed"] == 1
+
+    with db.connection() as conn:
+        # Check that parent capture embed job was enqueued
+        cap_job = conn.execute(
+            "SELECT * FROM processing_jobs WHERE stage = 'embed' AND capture_id = 'cap_parent';"
+        ).fetchone()
+        assert cap_job is not None
+        assert cap_job["status"] == "pending"
+
+
+def test_reconcile_completed_jobs_enqueues_missing_capture_embed_jobs(test_db_and_blobs):
+    """Reconcile enqueues embed jobs for active captures lacking embeddings."""
+    db, _ = test_db_and_blobs
+    now_iso = datetime.datetime.now(datetime.UTC).isoformat()
+
+    with db.transaction() as conn:
+        conn.execute(
+            """
+            INSERT INTO captures (id, origin_namespace, collection_channel, collector, acquisition_method, retrieved_at, raw_content, user_note, is_deleted, created_at, updated_at)
+            VALUES ('cap_missing_emb', 'web', 'browser', 'cli', 'manual', ?, 'Some note to embed', '', 0, ?, ?);
+            """,
+            (now_iso, now_iso, now_iso),
+        )
+        rec = reconcile_completed_jobs(conn)
+        assert rec.get("queued_capture_embed_jobs", 0) >= 1
+
+        job = conn.execute(
+            "SELECT * FROM processing_jobs WHERE stage = 'embed' AND capture_id = 'cap_missing_emb';"
+        ).fetchone()
+        assert job is not None
+        assert job["status"] == "pending"

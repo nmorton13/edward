@@ -16,6 +16,7 @@ Edward is neutral to agent and model vendor. Any authorized agent can use the pu
    - `2`: Command line usage error or invalid arguments.
    - `3`: Idempotency conflict or fatal database error.
 4. **Idempotency**: The CLI `add` and `import-research` commands accept an optional `--idempotency-key <KEY>`. Replaying a key with identical arguments returns the original result; reusing it with different arguments raises a conflict (`Exit 3`). Other commands do not currently expose this option.
+5. **Scratch Library for Agent Experiments & Probes**: Capability probes, smoke tests, automated tests, and exploratory agent sweeps must **always** run against an isolated scratch library (`EDWARD_DATA_DIR=$(mktemp -d)`), never the user's default data directory (`~/.edward`). Writing test captures or throwaway projects to the default library pollutes the user's personal research memory. Both the CLI and MCP server detect test namespaces (`*-test`) or probe project titles and emit a warning to stderr when executed against the default library.
 
 ---
 
@@ -171,6 +172,36 @@ edward search "speculative decoding latency" \
 }
 ```
 
+### 2.5a Finding Similar Items (`edward similar`)
+
+Agents can find saved items (captures, resources, findings) similar in meaning to an existing item by reusing its stored vector embedding (no re-embedding performed):
+
+```bash
+edward similar <id> \
+  --limit 10 \
+  --type resource \
+  --exclude-project "local-ai" \
+  --json
+```
+
+**JSON Output Format:**
+```json
+[
+  {
+    "object_type": "resource",
+    "object_id": "res_01j7xyz...",
+    "title": "Fast Inference with Speculative Decoding",
+    "similarity": 0.8912,
+    "capture_id": "cap_01j7xyz..."
+  }
+]
+```
+
+Exit codes:
+- `0`: Success.
+- `1`: Unknown item ID or item has no embedding.
+- `2`: Bad options (invalid `--type`, non-positive `--limit`, or unknown project).
+
 ### 2.6 Exporting Evidence Packets (`edward export --packet`)
 
 For synthesis tasks, agents retrieve bounded evidence packets conforming to [`schemas/evidence-packet-v1.json`](../schemas/evidence-packet-v1.json):
@@ -285,6 +316,8 @@ Edward exposes a native **Model Context Protocol (MCP)** server via `edward mcp`
 #### Discovery & Retrieval
 - **`edward_search`**: Exact lexical full-text search (SQLite FTS5 `unicode61`) with optional taxonomic topic, form, intent, or project filters.
   - Parameters: `query: str`, `limit: int = 20`, `topic: str | None`, `form: str | None`, `intent: str | None`, `project: str | None`
+- **`edward_similar`**: Find items similar in meaning to an existing capture, resource, or finding using its stored vector embedding.
+  - Parameters: `object_id: str`, `limit: int = 20`, `type: str | None`, `exclude_project: str | None`
 - **`edward_ask`**: Run hybrid retrieval in deterministic Evidence Packet mode (the MCP tool always disables model synthesis). Returns candidate evidence items, source metadata, and supporting passages.
   - Parameters: `query: str`, `limit: int = 50`, `project: str | None = None`
 - **`edward_show`**: Retrieve complete object details (resource, capture, or finding) by ID, including clean text, source URL, labels, intents, and human annotations.

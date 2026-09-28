@@ -10,7 +10,14 @@ import typer
 from rich.console import Console
 
 from edward.blobs import BlobStore
-from edward.db import Database, get_default_data_dir, get_default_db_path
+from edward.db import (
+    Database,
+    get_default_data_dir,
+    get_default_db_path,
+    is_default_data_dir,
+    is_test_name,
+    is_test_namespace,
+)
 from edward.models import CaptureInput
 from edward.services.backup import create_backup
 from edward.services.bundle import import_research_bundle, ingest_markdown_report
@@ -26,6 +33,7 @@ from edward.services.lifecycle import (
     purge_object,
     remove_intent,
 )
+from edward.services.llm import get_summarizer_client
 from edward.services.privacy import PrivacyTransmissionError
 from edward.services.processor import (
     count_jobs,
@@ -272,6 +280,12 @@ def add_command(
         idempotency_key=idempotency_key,
     )
 
+    if is_test_namespace(origin) and is_default_data_dir():
+        err_console.print(
+            f"[yellow]Warning: Capture origin '{origin}' appears to be test data, but Edward is using the default library ({get_default_data_dir()}). "
+            "Probes and tests must run against a scratch library with EDWARD_DATA_DIR=$(mktemp -d).[/yellow]"
+        )
+
     try:
         with db.transaction() as conn:
             result = capture_item(conn, input_data, attachment_info=attachment_info)
@@ -497,6 +511,69 @@ def search_command(
                 out_console.print(f"   URL: {item.canonical_url}")
             if item.snippet:
                 out_console.print(f"   {item.snippet}")
+
+
+@app.command("similar")
+def similar_command(
+    object_id: str = typer.Argument(..., help="Object ID (capture, resource, or finding)"),
+    limit: int = typer.Option(20, "--limit", "-l", help="Maximum similar items to return"),
+    type: str | None = typer.Option(
+        None, "--type", "-t", help="Filter by object type: capture, resource, finding"
+    ),
+    exclude_project: str | None = typer.Option(
+        None, "--exclude-project", help="Exclude items belonging to project (by slug or ID)"
+    ),
+    json_mode: bool = typer.Option(False, "--json", help="Output machine-readable JSON on stdout"),
+) -> None:
+    """Find items similar in meaning to an existing capture, resource, or finding."""
+    if type and type not in ("capture", "resource", "finding"):
+        handle_error(
+            f"Invalid type '{type}'. Allowed values: capture, resource, finding",
+            exit_code=2,
+            as_json=json_mode,
+        )
+    if limit <= 0:
+        handle_error("Limit must be greater than 0", exit_code=2, as_json=json_mode)
+
+    from edward.services.embed import ItemNotEmbeddedError, ItemNotFoundError, find_similar
+    from edward.services.projects import ProjectNotFoundError
+
+    db, _ = get_services()
+    try:
+        with db.connection() as conn:
+            hits = find_similar(
+                conn,
+                object_id=object_id,
+                limit=limit,
+                object_type=type,
+                exclude_project=exclude_project,
+            )
+    except ProjectNotFoundError as e:
+        handle_error(str(e), exit_code=2, as_json=json_mode)
+    except (ItemNotFoundError, ItemNotEmbeddedError) as e:
+        handle_error(str(e), exit_code=1, as_json=json_mode)
+    except Exception as e:
+        handle_error(str(e), exit_code=1, as_json=json_mode)
+
+    if json_mode:
+        output_json_payload(hits)
+        return
+
+    if not hits:
+        out_console.print(f"No similar items found for [cyan]{object_id}[/cyan].")
+        return
+
+    out_console.print(
+        f"[bold]Similar items to[/bold] [cyan]{object_id}[/cyan] ({len(hits)} matches):\n"
+    )
+    for idx, hit in enumerate(hits, 1):
+        obj_type = hit["object_type"].upper()
+        sim_pct = f"{hit['similarity'] * 100:.1f}%"
+        out_console.print(
+            f"{idx}. [{obj_type}] [cyan]{hit['object_id']}[/cyan] (similarity: {sim_pct}) - {hit['title']}"
+        )
+        if hit.get("capture_id") and hit["object_type"] == "resource":
+            out_console.print(f"   Linked capture: [dim]{hit['capture_id']}[/dim]")
 
 
 @app.command("annotate")
@@ -916,7 +993,8 @@ def process_command(
             output_json_payload(rec_result)
         else:
             out_console.print(
-                f"[bold green]Reconciled jobs:[/bold green] {rec_result['reconciled_classify_jobs']} classify job(s) marked completed."
+                f"[bold green]Reconciled jobs:[/bold green] {rec_result['reconciled_classify_jobs']} classify job(s) marked completed, "
+                f"{rec_result.get('queued_capture_embed_jobs', 0)} capture embed job(s) queued."
             )
         return
 
@@ -928,6 +1006,7 @@ def process_command(
         "embed",
         "attachment-extract",
         "attachment-ocr",
+        "summarize",
     )
     if stage and stage not in valid_stages:
         handle_error(
@@ -935,6 +1014,19 @@ def process_command(
             exit_code=1,
             as_json=json_mode,
         )
+
+    if stage == "summarize":
+        if get_summarizer_client() is None:
+            handle_error(
+                "Summarizer model is not configured or disabled. "
+                "Set EDWARD_SUMMARIZER_MODE=enabled (and endpoint/model if needed).",
+                exit_code=1,
+                as_json=json_mode,
+            )
+        from edward.services.summarize import enqueue_missing_summarize_jobs
+
+        with db.transaction() as conn:
+            enqueue_missing_summarize_jobs(conn, capture_id=capture_id)
 
     result = process_pending_jobs(
         db,
@@ -1465,7 +1557,7 @@ def ask_command(
 def repair_titles_command(
     json_mode: bool = typer.Option(False, "--json", help="Output machine-readable JSON on stdout"),
 ) -> None:
-    """Re-derive resource titles that were set from an author instead of the source."""
+    """Repair resource titles with HTML entities, X page-title wrappers, or author names."""
     from edward.services.lifecycle import repair_author_derived_titles
 
     try:
@@ -1478,9 +1570,13 @@ def repair_titles_command(
     if json_mode:
         output_json_payload(result)
     else:
+        counts = result.get("counts", {})
         out_console.print(
             f"[bold green]Title repair complete![/bold green] "
-            f"(repaired: {result['repaired']}, left alone: {result['skipped']})"
+            f"(repaired: {result['repaired']}, left alone: {result['skipped']})\n"
+            f"  HTML entities: {counts.get('html_entities', 0)}, "
+            f"X wrappers: {counts.get('x_wrappers', 0)}, "
+            f"Author-derived: {counts.get('author_derived', 0)}"
         )
 
 
@@ -1717,14 +1813,18 @@ def accept_intent_command(
 @app.command("reindex")
 def reindex_command(
     embeddings: bool = typer.Option(False, "--embeddings", help="Rebuild vector embeddings"),
+    captures: bool = typer.Option(False, "--captures", help="Rebuild capture vector embeddings"),
     fts: bool = typer.Option(False, "--fts", help="Rebuild FTS5 lexical index"),
     json_mode: bool = typer.Option(False, "--json", help="Output machine-readable JSON on stdout"),
 ) -> None:
     """Rebuild FTS5 search projection and/or vector embeddings."""
     db, _ = get_services()
-    rebuild_all = not embeddings and not fts
+    rebuild_all = not embeddings and not fts and not captures
+    rebuild_resources = embeddings or rebuild_all
+    rebuild_captures = captures or embeddings or rebuild_all
     rebuilt_fts = 0
     rebuilt_embeddings = 0
+    rebuilt_captures = 0
 
     try:
         with db.transaction() as conn:
@@ -1753,7 +1853,7 @@ def reindex_command(
                     reindex_object_document(conn, "chunk", row["id"])
                     rebuilt_fts += 1
 
-            if embeddings or rebuild_all:
+            if rebuild_resources:
                 from edward.services.embed import embed_resource
 
                 for row in conn.execute(
@@ -1761,6 +1861,14 @@ def reindex_command(
                 ).fetchall():
                     embed_resource(conn, row["id"])
                     rebuilt_embeddings += 1
+
+            if rebuild_captures:
+                from edward.services.embed import embed_capture
+
+                for row in conn.execute("SELECT id FROM captures WHERE is_deleted = 0;").fetchall():
+                    emb_id = embed_capture(conn, row["id"])
+                    if emb_id:
+                        rebuilt_captures += 1
     except Exception as e:
         handle_error(str(e), exit_code=1, as_json=json_mode)
 
@@ -1768,12 +1876,13 @@ def reindex_command(
         "status": "completed",
         "rebuilt_fts_documents": rebuilt_fts,
         "rebuilt_embedded_resources": rebuilt_embeddings,
+        "rebuilt_embedded_captures": rebuilt_captures,
     }
     if json_mode:
         output_json_payload(result)
     else:
         out_console.print(
-            f"[bold green]Reindex complete![/bold green] (FTS docs: {rebuilt_fts}, Resources embedded: {rebuilt_embeddings})"
+            f"[bold green]Reindex complete![/bold green] (FTS docs: {rebuilt_fts}, Resources embedded: {rebuilt_embeddings}, Captures embedded: {rebuilt_captures})"
         )
 
 
@@ -1785,6 +1894,11 @@ def project_create_command(
     json_mode: bool = typer.Option(False, "--json", help="Output machine-readable JSON"),
 ) -> None:
     """Create an active research and writing workspace."""
+    if (is_test_name(title) or is_test_name(slug)) and is_default_data_dir():
+        err_console.print(
+            f"[yellow]Warning: Project '{title}' appears to be test/probe data, but Edward is using the default library ({get_default_data_dir()}). "
+            "Probes and tests must run against a scratch library with EDWARD_DATA_DIR=$(mktemp -d).[/yellow]"
+        )
     try:
         db, _ = get_services()
         with db.transaction() as conn:

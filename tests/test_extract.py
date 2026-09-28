@@ -348,3 +348,40 @@ def test_nested_title_only_response_still_falls_back(monkeypatch):
     )
     assert result.extractor == "local-fallback"
     assert "Saved body." in (result.clean_text or "")
+
+
+def test_clean_html_simple_unescapes_title_entities():
+    html_doc = """
+    <html>
+      <head>
+        <title>OpenAI on X: &quot;GPT-6 Sol &amp; Luna&quot; / X</title>
+      </head>
+      <body><p>Some body text</p></body>
+    </html>
+    """
+    title, body = clean_html_simple(html_doc)
+    assert title == 'OpenAI on X: "GPT-6 Sol & Luna" / X'
+    assert "Some body text" in body
+
+
+def test_extract_content_unescapes_title_entities(monkeypatch):
+    monkeypatch.setattr("edward.services.extract.is_tool_available", lambda tool: True)
+    monkeypatch.setattr(
+        "edward.services.extract.run_tool",
+        lambda *args, **kwargs: SubprocessResult(
+            0,
+            json.dumps(
+                {
+                    "extracted": {
+                        "title": "Joel&#39;s Test &amp; More",
+                        "content": "A" * 150,
+                    }
+                }
+            ),
+            "",
+            0.1,
+        ),
+    )
+    result = extract_content("https://example.com/article")
+    assert result.status == "completed"
+    assert result.title == "Joel's Test & More"

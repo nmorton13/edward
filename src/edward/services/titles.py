@@ -12,6 +12,7 @@ This module is pure: no database, no network. Callers own persistence.
 
 from __future__ import annotations
 
+import html
 import re
 import unicodedata
 
@@ -127,3 +128,41 @@ def derive_post_title(text: str, *, fallback: str | None = None) -> str:
     if line:
         return shorten(line)
     return fallback or ""
+
+
+def decode_html_entities(text: str | None) -> str:
+    """Decode HTML entities in text, unravelling double-encoded entities (e.g. &amp;amp;)."""
+    if not text or "&" not in text:
+        return text or ""
+    current = text
+    for _ in range(5):
+        decoded = html.unescape(current)
+        if decoded == current:
+            break
+        current = decoded
+    return current
+
+
+_X_TITLE_WRAPPER = re.compile(
+    r"^(.+?)\s+on\s+X:\s*[\"“](.*?)(?:[\"”]|(?<=…)|(?<=\.\.\.))\s*/\s*X$",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def unwrap_x_title(title: str | None) -> tuple[str, str] | None:
+    """Recognise the X page-title wrapper '<author> on X: "<text>" / X' and extract post text.
+
+    Returns a tuple of (shortened_post_title, author) if the entire title matches the pattern,
+    or None if it does not match.
+    """
+    if not title:
+        return None
+    cleaned = decode_html_entities(title.strip())
+    m = _X_TITLE_WRAPPER.match(cleaned)
+    if not m:
+        return None
+    author = m.group(1).strip()
+    post_text = m.group(2).strip()
+    if not author or not post_text:
+        return None
+    return shorten(post_text), author

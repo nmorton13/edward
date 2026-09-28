@@ -24,6 +24,7 @@ from edward.services.extract import ExtractionResult, clean_html_simple, extract
 from edward.services.network import NetworkError, safe_fetch_url
 from edward.services.ocr import OCR_STAGE, format_ocr_passage, ocr_image_bytes
 from edward.services.pdf import PDF_STAGE, extract_pdf_text
+from edward.services.privacy import PrivacyTransmissionError
 from edward.services.resource import (
     get_cached_content,
     save_source_snapshot,
@@ -154,6 +155,7 @@ def claim_job(
     lease_seconds: int = 60,
     stage: str | None = None,
     capture_id: str | None = None,
+    include_summarize: bool | None = None,
 ) -> dict[str, Any] | None:
     """Atomically recover expired leases and claim the next available pending job."""
     now_iso = datetime.datetime.now(datetime.UTC).isoformat()
@@ -175,7 +177,7 @@ def claim_job(
     )
 
     # 2. Claim the next available job.
-    supported_stages = (
+    supported_stages = [
         "resource-fetch",
         "extract",
         "classify",
@@ -183,7 +185,20 @@ def claim_job(
         "embed",
         PDF_STAGE,
         OCR_STAGE,
-    )
+    ]
+    if include_summarize is None:
+        if stage == "summarize":
+            include_summarize = True
+        elif stage is None:
+            from edward.services.llm import get_summarizer_client
+
+            include_summarize = get_summarizer_client() is not None
+        else:
+            include_summarize = False
+
+    if include_summarize:
+        supported_stages.append("summarize")
+
     if stage and stage not in supported_stages:
         return None
 
@@ -362,21 +377,56 @@ def _load_job_context(conn: sqlite3.Connection, job: dict[str, Any]) -> dict[str
         context["target_data"] = target_data
         context["input_hash"] = target_data["content_hash"]
 
+    elif stage == "summarize":
+        if not resource_id:
+            raise ValueError("Stage 'summarize' requires resource_id")
+        content_row = conn.execute(
+            "SELECT clean_text, summary, content_hash FROM resource_contents WHERE resource_id = ? ORDER BY created_at DESC LIMIT 1;",
+            (resource_id,),
+        ).fetchone()
+        context["text"] = ((content_row["clean_text"] or "").strip()) if content_row else ""
+        context["existing_summary"] = (
+            (content_row["summary"] or "").strip() if content_row else None
+        )
+        context["content_hash"] = content_row["content_hash"] if content_row else None
+        context["input_hash"] = content_row["content_hash"] if content_row else None
+
+        cap_link = conn.execute(
+            """
+            SELECT c.origin_namespace
+            FROM capture_resources cr
+            JOIN captures c ON cr.capture_id = c.id
+            WHERE cr.resource_id = ?
+            ORDER BY cr.created_at DESC LIMIT 1;
+            """,
+            (resource_id,),
+        ).fetchone()
+        res_row = conn.execute(
+            "SELECT canonical_url FROM resources WHERE id = ?;", (resource_id,)
+        ).fetchone()
+        from edward.services.privacy import classify_content_data_class
+
+        origin_ns = cap_link["origin_namespace"] if cap_link else "web"
+        can_url = res_row["canonical_url"] if res_row else None
+        context["data_class"] = classify_content_data_class(
+            origin_namespace=origin_ns, canonical_url=can_url
+        )
+
     elif stage in ("finding-extraction", "embed"):
         if not resource_id:
             if stage == "embed" and capture_id:
                 cap_row = conn.execute(
-                    "SELECT raw_content, user_note, origin_namespace FROM captures WHERE id = ?;",
+                    "SELECT origin_namespace FROM captures WHERE id = ?;",
                     (capture_id,),
                 ).fetchone()
                 if not cap_row:
                     raise ValueError(f"Capture {capture_id} not found")
-                cap_text = (
-                    (cap_row["user_note"] or "") + ("\n\n" + (cap_row["raw_content"] or ""))
-                ).strip()
-                context["text"] = cap_text
-                context["content_hash"] = hashlib.sha256(cap_text.encode("utf-8")).hexdigest()
-                context["input_hash"] = context["content_hash"]
+                from edward.services.embed import get_capture_embedding_text_and_hash
+
+                cap_text, input_hash = get_capture_embedding_text_and_hash(conn, capture_id)
+                context["text"] = cap_text or ""
+                context["content_hash"] = input_hash or ""
+                context["input_hash"] = input_hash or ""
                 from edward.services.privacy import classify_content_data_class
 
                 context["data_class"] = classify_content_data_class(
@@ -481,6 +531,7 @@ def _perform_job_work(
     blob_store: BlobStore,
     job: dict[str, Any],
     context: dict[str, Any],
+    llm_client: Any | None = None,
 ) -> dict[str, Any]:
     """Execute long-running network, subprocess, or external computation outside database transactions."""
     stage = job["stage"]
@@ -611,6 +662,40 @@ def _perform_job_work(
             "input_hash": context.get("input_hash"),
         }
 
+    elif stage == "summarize":
+        from edward.services.summarize import generate_summary
+
+        existing = context.get("existing_summary")
+        if existing and existing.strip():
+            return {
+                "status": "completed",
+                "summary": existing.strip(),
+                "preserved": True,
+                "input_hash": context.get("input_hash"),
+            }
+
+        text = context.get("text", "").strip()
+        if not text:
+            return {
+                "status": "completed",
+                "summary": None,
+                "preserved": False,
+                "input_hash": context.get("input_hash"),
+            }
+
+        client = llm_client or context.get("llm_client")
+        summary_text = generate_summary(
+            text=text,
+            client=client,
+            data_class=context.get("data_class", "public_web"),
+        )
+        return {
+            "status": "completed",
+            "summary": summary_text,
+            "preserved": False,
+            "input_hash": context.get("input_hash"),
+        }
+
     elif stage == "embed":
         from edward.services.embed import (
             chunk_markdown_text,
@@ -682,20 +767,27 @@ def _perform_job_work(
 
         # 5. If standalone capture, compute capture embedding outside transaction
         capture_embedding: dict[str, Any] | None = None
-        if not job.get("resource_id") and job.get("capture_id") and text:
-            doc_text = text[:1500]
-            doc_hash = hashlib.sha256(doc_text.encode("utf-8")).hexdigest()
-            cached = existing_emb_map.get((job.get("capture_id"), doc_hash))
-            if cached and cached["model"] == target_model:
-                cap_vec, cap_m = cached["vector"], cached["model"]
+        if not job.get("resource_id") and job.get("capture_id"):
+            if text:
+                doc_text = text[:1500]
+                doc_hash = hashlib.sha256(doc_text.encode("utf-8")).hexdigest()
+                cached = existing_emb_map.get((job.get("capture_id"), doc_hash))
+                if cached and cached["model"] == target_model:
+                    cap_vec, cap_m = cached["vector"], cached["model"]
+                else:
+                    cap_vec, cap_m = generate_embedding(doc_text, model=target_model)
+                capture_embedding = {
+                    "capture_id": job.get("capture_id"),
+                    "vector": cap_vec,
+                    "model": cap_m,
+                    "text": doc_text,
+                }
             else:
-                cap_vec, cap_m = generate_embedding(doc_text, model=target_model)
-            capture_embedding = {
-                "capture_id": job.get("capture_id"),
-                "vector": cap_vec,
-                "model": cap_m,
-                "text": doc_text,
-            }
+                return {
+                    "status": "failed",
+                    "error": "Capture has no text or extracted resources to embed",
+                    "capture_id": job.get("capture_id"),
+                }
 
         return {
             "status": "completed",
@@ -750,12 +842,19 @@ def _persist_job_result(
             capture_id = cap_row["capture_id"]
             job["capture_id"] = capture_id
 
-    if job_error is not None:
+    failed_result = bool(work_result and work_result.get("status") == "failed")
+    if job_error is not None or failed_result:
         attempts = job["attempts"] + 1
         max_attempts = job.get("max_attempts", 3)
-        err_str = sanitize_error_message(str(job_error))
+        err_msg = (
+            str(job_error)
+            if job_error is not None
+            else ((work_result.get("error") if work_result else None) or "Stage failed")
+        )
+        err_str = sanitize_error_message(str(err_msg))
+        is_terminal = isinstance(job_error, PrivacyTransmissionError)
 
-        if attempts >= max_attempts:
+        if attempts >= max_attempts or failed_result or is_terminal:
             if owner:
                 cursor = conn.execute(
                     """
@@ -1376,6 +1475,39 @@ def _persist_job_result(
             ),
         )
 
+        # Enqueue downstream embed for parent captures linked to this resource
+        cap_links = conn.execute(
+            "SELECT DISTINCT capture_id FROM capture_resources WHERE resource_id = ?;",
+            (resource_id,),
+        ).fetchall()
+        for cl in cap_links:
+            p_cap_id = cl["capture_id"]
+            if p_cap_id:
+                cap_emb_job_id = generate_id("job")
+                cap_emb_job_key = make_job_key("embed", p_cap_id)
+                conn.execute(
+                    """
+                    INSERT INTO processing_jobs (
+                        id, job_key, capture_id, stage, status, available_at, attempts, created_at, updated_at
+                    ) VALUES (?, ?, ?, 'embed', 'pending', ?, 0, ?, ?)
+                    ON CONFLICT(job_key) DO UPDATE SET
+                        status = CASE WHEN processing_jobs.status IN ('completed', 'failed')
+                                      THEN 'pending' ELSE processing_jobs.status END,
+                        available_at = CASE WHEN processing_jobs.status IN ('completed', 'failed')
+                                            THEN excluded.available_at ELSE processing_jobs.available_at END,
+                        attempts = CASE WHEN processing_jobs.status IN ('completed', 'failed')
+                                        THEN 0 ELSE processing_jobs.attempts END,
+                        input_hash = CASE WHEN processing_jobs.status IN ('completed', 'failed')
+                                          THEN NULL ELSE processing_jobs.input_hash END,
+                        last_error = CASE WHEN processing_jobs.status IN ('completed', 'failed')
+                                          THEN NULL ELSE processing_jobs.last_error END,
+                        completed_at = CASE WHEN processing_jobs.status IN ('completed', 'failed')
+                                            THEN NULL ELSE processing_jobs.completed_at END,
+                        updated_at = excluded.updated_at;
+                    """,
+                    (cap_emb_job_id, cap_emb_job_key, p_cap_id, now_iso, now_iso, now_iso),
+                )
+
         # Schedule downstream classify job with supersedable key
         cls_job_id = generate_id("job")
         cls_job_key = make_job_key("classify", resource_id)
@@ -1451,6 +1583,88 @@ def _persist_job_result(
             """,
             (cls_job_id, cls_job_key, capture_id, resource_id, job_id, now_iso, now_iso, now_iso),
         )
+
+        # Schedule downstream summarize job if summarizer is configured
+        from edward.services.llm import get_summarizer_client
+
+        if get_summarizer_client() is not None:
+            sum_job_id = generate_id("job")
+            sum_job_key = make_job_key("summarize", resource_id)
+            conn.execute(
+                """
+                INSERT INTO processing_jobs (
+                    id, job_key, capture_id, resource_id, stage, depends_on, status,
+                    available_at, attempts, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'summarize', ?, 'pending', ?, 0, ?, ?)
+                ON CONFLICT(job_key) DO UPDATE SET
+                    capture_id = COALESCE(excluded.capture_id, processing_jobs.capture_id),
+                    status = CASE
+                        WHEN processing_jobs.status IN ('completed', 'failed')
+                             OR (processing_jobs.status = 'pending' AND processing_jobs.lease_owner IS NULL)
+                        THEN 'pending'
+                        ELSE processing_jobs.status
+                    END,
+                    depends_on = CASE
+                        WHEN processing_jobs.status IN ('completed', 'failed')
+                             OR (processing_jobs.status = 'pending' AND processing_jobs.lease_owner IS NULL)
+                        THEN excluded.depends_on
+                        ELSE processing_jobs.depends_on
+                    END,
+                    available_at = CASE
+                        WHEN processing_jobs.status IN ('completed', 'failed')
+                             OR (processing_jobs.status = 'pending' AND processing_jobs.lease_owner IS NULL)
+                        THEN excluded.available_at
+                        ELSE processing_jobs.available_at
+                    END,
+                    attempts = CASE
+                        WHEN processing_jobs.status IN ('completed', 'failed')
+                             OR (processing_jobs.status = 'pending' AND processing_jobs.lease_owner IS NULL)
+                        THEN 0
+                        ELSE processing_jobs.attempts
+                    END,
+                    last_error = CASE
+                        WHEN processing_jobs.status IN ('completed', 'failed')
+                             OR (processing_jobs.status = 'pending' AND processing_jobs.lease_owner IS NULL)
+                        THEN NULL
+                        ELSE processing_jobs.last_error
+                    END,
+                    completed_at = CASE
+                        WHEN processing_jobs.status IN ('completed', 'failed')
+                             OR (processing_jobs.status = 'pending' AND processing_jobs.lease_owner IS NULL)
+                        THEN NULL
+                        ELSE processing_jobs.completed_at
+                    END,
+                    started_at = CASE
+                        WHEN processing_jobs.status IN ('completed', 'failed')
+                             OR (processing_jobs.status = 'pending' AND processing_jobs.lease_owner IS NULL)
+                        THEN NULL
+                        ELSE processing_jobs.started_at
+                    END,
+                    lease_owner = CASE
+                        WHEN processing_jobs.status IN ('completed', 'failed')
+                             OR (processing_jobs.status = 'pending' AND processing_jobs.lease_owner IS NULL)
+                        THEN NULL
+                        ELSE processing_jobs.lease_owner
+                    END,
+                    lease_expires_at = CASE
+                        WHEN processing_jobs.status IN ('completed', 'failed')
+                             OR (processing_jobs.status = 'pending' AND processing_jobs.lease_owner IS NULL)
+                        THEN NULL
+                        ELSE processing_jobs.lease_expires_at
+                    END,
+                    updated_at = excluded.updated_at;
+                """,
+                (
+                    sum_job_id,
+                    sum_job_key,
+                    capture_id,
+                    resource_id,
+                    job_id,
+                    now_iso,
+                    now_iso,
+                    now_iso,
+                ),
+            )
         return "completed"
 
     elif stage == "classify":
@@ -1615,6 +1829,113 @@ def _persist_job_result(
                 """,
                 (fe_job_id, fe_job_key, capture_id, resource_id, job_id, now_iso, now_iso, now_iso),
             )
+        return "completed"
+
+    elif stage == "summarize":
+        content_row = conn.execute(
+            "SELECT content_hash FROM resource_contents WHERE resource_id = ? ORDER BY created_at DESC LIMIT 1;",
+            (resource_id,),
+        ).fetchone()
+        current_hash = content_row["content_hash"] if content_row else None
+        work_input_hash = (
+            work_result.get("input_hash")
+            if work_result
+            else (context.get("input_hash") if context else None)
+        )
+
+        if current_hash and work_input_hash and current_hash != work_input_hash:
+            if owner:
+                cursor = conn.execute(
+                    """
+                    UPDATE processing_jobs
+                    SET status = 'pending',
+                        lease_owner = NULL,
+                        lease_expires_at = NULL,
+                        capture_id = COALESCE((
+                            SELECT cr.capture_id FROM capture_resources cr
+                            WHERE cr.resource_id = processing_jobs.resource_id
+                            ORDER BY cr.created_at DESC LIMIT 1
+                        ), processing_jobs.capture_id),
+                        available_at = ?,
+                        updated_at = ?
+                    WHERE id = ? AND status = 'running' AND lease_owner = ?
+                      AND (lease_expires_at IS NULL OR lease_expires_at > ?);
+                    """,
+                    (now_iso, now_iso, job_id, owner, now_iso),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    UPDATE processing_jobs
+                    SET status = 'pending',
+                        lease_owner = NULL,
+                        lease_expires_at = NULL,
+                        capture_id = COALESCE((
+                            SELECT cr.capture_id FROM capture_resources cr
+                            WHERE cr.resource_id = processing_jobs.resource_id
+                            ORDER BY cr.created_at DESC LIMIT 1
+                        ), processing_jobs.capture_id),
+                        available_at = ?,
+                        updated_at = ?
+                    WHERE id = ? AND status = 'running';
+                    """,
+                    (now_iso, now_iso, job_id),
+                )
+            if cursor.rowcount == 0:
+                conn.rollback()
+                return "lost-lease"
+            return "pending"
+
+        # 1. Atomic lease fencing update FIRST
+        if owner:
+            cursor = conn.execute(
+                """
+                UPDATE processing_jobs
+                SET status = 'completed', input_hash = ?, completed_at = ?, updated_at = ?,
+                    lease_owner = NULL, lease_expires_at = NULL
+                WHERE id = ? AND status = 'running' AND lease_owner = ?
+                  AND (lease_expires_at IS NULL OR lease_expires_at > ?);
+                """,
+                (work_input_hash, now_iso, now_iso, job_id, owner, now_iso),
+            )
+        else:
+            cursor = conn.execute(
+                """
+                UPDATE processing_jobs
+                SET status = 'completed', input_hash = ?, completed_at = ?, updated_at = ?,
+                    lease_owner = NULL, lease_expires_at = NULL
+                WHERE id = ? AND status = 'running';
+                """,
+                (work_input_hash, now_iso, now_iso, job_id),
+            )
+        if cursor.rowcount == 0:
+            conn.rollback()
+            return "lost-lease"
+
+        # 2. Side effects: store summary if not preserved and summary is non-empty
+        if (
+            work_result
+            and not work_result.get("preserved")
+            and work_result.get("summary")
+            and resource_id
+        ):
+            summary_text = work_result["summary"]
+            conn.execute(
+                """
+                UPDATE resource_contents
+                SET summary = ?
+                WHERE id = (
+                    SELECT id FROM resource_contents
+                    WHERE resource_id = ?
+                    ORDER BY created_at DESC LIMIT 1
+                ) AND (summary IS NULL OR trim(summary) = '');
+                """,
+                (summary_text, resource_id),
+            )
+            from edward.services.lifecycle import reindex_object_document
+
+            reindex_object_document(conn, "resource", resource_id)
+
         return "completed"
 
     elif stage == "finding-extraction":
@@ -1951,12 +2272,13 @@ def execute_job(
     conn: sqlite3.Connection,
     blob_store: BlobStore,
     job: dict[str, Any],
+    llm_client: Any | None = None,
 ) -> bool:
     """Execute a single claimed job directly (for testing or atomic step execution)."""
     ctx = None
     try:
         ctx = _load_job_context(conn, job)
-        work_res = _perform_job_work(blob_store, job, ctx)
+        work_res = _perform_job_work(blob_store, job, ctx, llm_client=llm_client)
         job_err = None
     except Exception as e:
         work_res = None
@@ -1994,6 +2316,7 @@ def process_pending_jobs(
     limit: int = 10,
     capture_id: str | None = None,
     stage: str | None = None,
+    llm_client: Any | None = None,
 ) -> dict[str, int]:
     """Process pending background jobs in a loop up to limit using short transaction boundaries."""
     w_id = worker_id or f"worker_{uuid.uuid4().hex[:8]}"
@@ -2005,7 +2328,13 @@ def process_pending_jobs(
     for _ in range(limit):
         # 1. Short transaction: claim next pending job and load context
         with _get_transaction(db_or_conn) as conn:
-            job = claim_job(conn, w_id, stage=stage, capture_id=capture_id)
+            job = claim_job(
+                conn,
+                w_id,
+                stage=stage,
+                capture_id=capture_id,
+                include_summarize=True if llm_client is not None else None,
+            )
             if not job:
                 break
             try:
@@ -2021,7 +2350,7 @@ def process_pending_jobs(
             job_err = load_err
         else:
             try:
-                work_res = _perform_job_work(blob_store, job, ctx)
+                work_res = _perform_job_work(blob_store, job, ctx, llm_client=llm_client)
                 job_err = None
             except Exception as e:
                 work_res = None
@@ -2203,8 +2532,50 @@ def get_processing_status(conn: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
+def enqueue_missing_capture_embed_jobs(conn: sqlite3.Connection) -> int:
+    """Queue pending embed jobs for any active captures missing embeddings."""
+    now_iso = datetime.datetime.now(datetime.UTC).isoformat()
+    rows = conn.execute(
+        """
+        SELECT c.id FROM captures c
+        LEFT JOIN embeddings e ON e.object_type = 'capture' AND e.object_id = c.id
+        WHERE e.id IS NULL AND c.is_deleted = 0;
+        """
+    ).fetchall()
+    queued = 0
+    for r in rows:
+        cid = r["id"]
+        job_id = generate_id("job")
+        job_key = make_job_key("embed", cid)
+        conn.execute(
+            """
+            INSERT INTO processing_jobs (
+                id, job_key, capture_id, stage, status, available_at, attempts, created_at, updated_at
+            ) VALUES (?, ?, ?, 'embed', 'pending', ?, 0, ?, ?)
+            ON CONFLICT(job_key) DO UPDATE SET
+                status = CASE WHEN processing_jobs.status IN ('completed', 'failed')
+                              THEN 'pending' ELSE processing_jobs.status END,
+                available_at = CASE WHEN processing_jobs.status IN ('completed', 'failed')
+                                    THEN excluded.available_at ELSE processing_jobs.available_at END,
+                attempts = CASE WHEN processing_jobs.status IN ('completed', 'failed')
+                                THEN 0 ELSE processing_jobs.attempts END,
+                input_hash = CASE WHEN processing_jobs.status IN ('completed', 'failed')
+                                  THEN NULL ELSE processing_jobs.input_hash END,
+                last_error = CASE WHEN processing_jobs.status IN ('completed', 'failed')
+                                  THEN NULL ELSE processing_jobs.last_error END,
+                completed_at = CASE WHEN processing_jobs.status IN ('completed', 'failed')
+                                    THEN NULL ELSE processing_jobs.completed_at END,
+                updated_at = excluded.updated_at;
+            """,
+            (job_id, job_key, cid, now_iso, now_iso, now_iso),
+        )
+        queued += 1
+    return queued
+
+
 def reconcile_completed_jobs(conn: sqlite3.Connection) -> dict[str, int]:
-    """Mark pending classify jobs whose targets already have judgments or labels as completed."""
+    """Mark pending classify jobs whose targets already have judgments or labels as completed,
+    and enqueue pending embed jobs for captures missing embeddings."""
     now_iso = datetime.datetime.now(datetime.UTC).isoformat()
     cursor = conn.execute(
         """
@@ -2226,4 +2597,27 @@ def reconcile_completed_jobs(conn: sqlite3.Connection) -> dict[str, int]:
         """,
         (now_iso, now_iso),
     )
-    return {"reconciled_classify_jobs": cursor.rowcount}
+    reconciled_summarize = conn.execute(
+        """
+        UPDATE processing_jobs
+        SET status = 'completed', completed_at = ?, updated_at = ?
+        WHERE stage = 'summarize' AND status = 'pending'
+          AND EXISTS (
+              SELECT 1 FROM resource_contents rc
+              WHERE rc.resource_id = processing_jobs.resource_id
+                AND length(trim(rc.summary)) > 0
+          );
+        """,
+        (now_iso, now_iso),
+    ).rowcount
+    queued_embed = enqueue_missing_capture_embed_jobs(conn)
+    from edward.services.summarize import enqueue_missing_summarize_jobs
+
+    queued_summarize = enqueue_missing_summarize_jobs(conn)
+
+    return {
+        "reconciled_classify_jobs": cursor.rowcount,
+        "reconciled_summarize_jobs": reconciled_summarize,
+        "queued_capture_embed_jobs": queued_embed,
+        "queued_summarize_jobs": queued_summarize,
+    }

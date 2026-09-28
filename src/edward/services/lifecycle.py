@@ -15,7 +15,12 @@ from edward.services.shortlinks import (
     looks_like_shortlink_interstitial,
     resolve_shortlink,
 )
-from edward.services.titles import derive_post_title, is_author_derived_title
+from edward.services.titles import (
+    decode_html_entities,
+    derive_post_title,
+    is_author_derived_title,
+    unwrap_x_title,
+)
 
 if TYPE_CHECKING:
     from edward.blobs import BlobStore
@@ -594,19 +599,20 @@ def repair_author_derived_titles(
     db: "Database",
     blob_store: "BlobStore",
 ) -> dict[str, Any]:
-    """Re-derive titles that were set from an author instead of the source text.
+    """Repair resource titles that have HTML entities, X page-title wrappers, or author names.
 
-    An X resource's title was previously written as the post's author name, so
-    every retrieved item read as a bare person rather than the thing saved. The
-    post text was always stored, so the correct title is recoverable in place.
-
-    Only a title that exactly matches one of the resource's author identities is
-    rewritten; a title already derived from the source is left untouched. The
-    display name comes from the retained source snapshot, because a handle alone
-    does not always match the stored title.
+    1. Unescapes HTML entities across all active resources (e.g. &quot;, &#x27;, &amp;).
+    2. Strips X page-title wrappers ('<author> on X: "<text>" / X') down to the post text,
+       updating the resource author column if it is empty.
+    3. Re-derives post titles from clean content if the title exactly matches an author identity.
+    4. Keeps search_documents (FTS5) synchronously updated in the same transaction.
     """
     repaired: list[str] = []
     skipped = 0
+    count_entities = 0
+    count_wrappers = 0
+    count_authors = 0
+
     with db.connection() as conn:
         rows = conn.execute(
             """
@@ -614,13 +620,15 @@ def repair_author_derived_titles(
                    r.canonical_url AS url, s.content_hash AS content_hash
             FROM resources r
             LEFT JOIN source_snapshots s ON s.resource_id = r.id
-            WHERE r.is_deleted = 0
-              AND r.canonical_url LIKE 'http%://%/status/%';
+            WHERE r.is_deleted = 0;
             """
         ).fetchall()
 
     snapshot_authors: dict[str, list[str]] = {}
     for row in rows:
+        url = row["url"] or ""
+        if not (url.startswith("http") and "/status/" in url):
+            continue
         content_hash = row["content_hash"]
         if not content_hash or content_hash in snapshot_authors:
             continue
@@ -630,36 +638,78 @@ def repair_author_derived_titles(
 
     with db.transaction() as conn:
         for row in rows:
-            identities: list[str | None] = [row["author"], row["url"]]
-            identities.extend(snapshot_authors.get(row["content_hash"] or "", []))
-            if not is_author_derived_title(row["title"], *identities):
-                skipped += 1
-                continue
-            content = conn.execute(
-                """
-                SELECT clean_text FROM resource_contents
-                WHERE resource_id = ? ORDER BY created_at DESC LIMIT 1;
-                """,
-                (row["id"],),
-            ).fetchone()
-            if not content or not (content["clean_text"] or "").strip():
-                skipped += 1
-                continue
-            new_title = derive_post_title(
-                content["clean_text"],
-                fallback=row["author"] or row["url"] or row["id"],
-            )
-            if not new_title or new_title == row["title"]:
-                skipped += 1
-                continue
-            conn.execute(
-                "UPDATE resources SET title = ? WHERE id = ?;",
-                (new_title, row["id"]),
-            )
-            reindex_object_document(conn, "resource", row["id"])
-            repaired.append(row["id"])
+            rid = row["id"]
+            orig_title = row["title"] or ""
+            orig_author = row["author"]
+            url = row["url"] or ""
 
-    return {"repaired": len(repaired), "skipped": skipped, "resource_ids": repaired}
+            unescaped_title = decode_html_entities(orig_title)
+            had_entity = unescaped_title != orig_title
+
+            x_match = unwrap_x_title(unescaped_title)
+            had_wrapper = False
+            had_author_derived = False
+            new_author = orig_author
+
+            if x_match:
+                new_title, ext_author = x_match
+                had_wrapper = True
+                if not new_author and ext_author:
+                    new_author = ext_author
+            else:
+                new_title = unescaped_title
+                if url.startswith("http") and "/status/" in url:
+                    identities: list[str | None] = [new_author, url]
+                    identities.extend(snapshot_authors.get(row["content_hash"] or "", []))
+                    if is_author_derived_title(new_title, *identities):
+                        content = conn.execute(
+                            """
+                            SELECT clean_text FROM resource_contents
+                            WHERE resource_id = ? ORDER BY created_at DESC LIMIT 1;
+                            """,
+                            (rid,),
+                        ).fetchone()
+                        if content and (content["clean_text"] or "").strip():
+                            derived = derive_post_title(
+                                content["clean_text"],
+                                fallback=new_author or url or rid,
+                            )
+                            if derived and derived != new_title:
+                                new_title = derived
+                                had_author_derived = True
+
+            title_changed = new_title != orig_title
+            author_changed = new_author != orig_author
+
+            if title_changed or author_changed:
+                conn.execute(
+                    "UPDATE resources SET title = ?, author = ? WHERE id = ?;",
+                    (new_title, new_author, rid),
+                )
+                reindex_object_document(conn, "resource", rid)
+                repaired.append(rid)
+                if had_entity:
+                    count_entities += 1
+                if had_wrapper:
+                    count_wrappers += 1
+                if had_author_derived:
+                    count_authors += 1
+            else:
+                skipped += 1
+
+    return {
+        "repaired": len(repaired),
+        "skipped": skipped,
+        "resource_ids": repaired,
+        "counts": {
+            "html_entities": count_entities,
+            "x_wrappers": count_wrappers,
+            "author_derived": count_authors,
+        },
+        "repaired_html_entities": count_entities,
+        "repaired_x_wrappers": count_wrappers,
+        "repaired_author_derived": count_authors,
+    }
 
 
 def backfill_shortlink_extractions(

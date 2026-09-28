@@ -87,8 +87,21 @@ class LLMClient:
         ).rstrip("/")
         self.base_url = raw_base
         self.model = model or os.environ.get("EDWARD_ANSWER_MODEL") or "llama3.2"
-        self.api_key = api_key or os.environ.get("EDWARD_ANSWER_API_KEY", "")
-        self.provider = provider or os.environ.get("EDWARD_ANSWER_PROVIDER", "llm")
+        self.api_key = (
+            api_key
+            or os.environ.get("EDWARD_ANSWER_API_KEY")
+            or os.environ.get("OPENROUTER_API_KEY")
+            or ""
+        )
+        self.provider = (
+            (provider or os.environ.get("EDWARD_ANSWER_PROVIDER", "llm")).strip().lower()
+        )
+        if (
+            self.provider == "openrouter"
+            and self.model.endswith("-latest")
+            and not self.model.startswith("~")
+        ):
+            self.model = f"~{self.model}"
         self.location = resolve_provider_location(
             provider_name=self.provider,
             declared_location=location or os.environ.get("EDWARD_ANSWER_LOCATION"),
@@ -228,8 +241,10 @@ def get_answer_client() -> LLMClient | None:
     local_modes = ("local-model", "local")
     enable_only = mode in ("enabled", "on")
 
-    # Check if base URL or model is specified
+    provider = os.environ.get("EDWARD_ANSWER_PROVIDER", "llm").strip().lower()
     base_url = os.environ.get("EDWARD_ANSWER_BASE_URL")
+    if not base_url and provider == "openrouter":
+        base_url = "https://openrouter.ai/api/v1"
     model = os.environ.get("EDWARD_ANSWER_MODEL")
 
     # A local mode may fall back to the localhost default; anything else needs an
@@ -245,5 +260,62 @@ def get_answer_client() -> LLMClient | None:
         base_url=base_url,
         model=model,
         location=os.environ.get("EDWARD_ANSWER_LOCATION"),
+        provider=provider,
+        timeout=timeout,
+    )
+
+
+def get_summarizer_client() -> LLMClient | None:
+    """Return a configured LLMClient for summarization, or None.
+
+    Edward is memory, not a mind: no model is contacted unless an operator
+    explicitly opts in. Absence is the default, so a leftover base URL or model
+    name from a previous configuration cannot silently re-enable a model.
+    """
+    mode = os.environ.get("EDWARD_SUMMARIZER_MODE", "disabled").strip().lower() or "disabled"
+    if mode in ("disabled", "none", "off", ""):
+        return None
+
+    local_modes = ("local-model", "local")
+    enable_only = mode in ("enabled", "on")
+
+    provider = (
+        (
+            os.environ.get("EDWARD_SUMMARIZER_PROVIDER")
+            or os.environ.get("EDWARD_ANSWER_PROVIDER", "llm")
+        )
+        .strip()
+        .lower()
+    )
+
+    base_url = os.environ.get("EDWARD_SUMMARIZER_BASE_URL")
+    if not base_url and provider == "openrouter":
+        base_url = "https://openrouter.ai/api/v1"
+
+    model = os.environ.get("EDWARD_SUMMARIZER_MODEL") or os.environ.get("EDWARD_ANSWER_MODEL")
+
+    if not base_url and not model and mode not in local_modes and not enable_only:
+        return None
+
+    timeout = float(os.environ.get("EDWARD_SUMMARIZER_TIMEOUT", "60"))
+    if timeout <= 0:
+        raise ValueError("EDWARD_SUMMARIZER_TIMEOUT must be greater than zero")
+
+    api_key = (
+        os.environ.get("EDWARD_SUMMARIZER_API_KEY")
+        or os.environ.get("EDWARD_ANSWER_API_KEY")
+        or os.environ.get("OPENROUTER_API_KEY")
+        or ""
+    )
+    location = os.environ.get("EDWARD_SUMMARIZER_LOCATION") or os.environ.get(
+        "EDWARD_ANSWER_LOCATION"
+    )
+
+    return LLMClient(
+        base_url=base_url,
+        model=model,
+        api_key=api_key,
+        location=location,
+        provider=provider,
         timeout=timeout,
     )

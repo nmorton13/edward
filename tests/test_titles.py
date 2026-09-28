@@ -11,12 +11,14 @@ import pytest
 
 from edward.services.lifecycle import reindex_object_document, repair_author_derived_titles
 from edward.services.titles import (
+    decode_html_entities,
     derive_post_title,
     first_meaningful_line,
     is_author_derived_title,
     is_usable_line,
     normalize_identity,
     shorten,
+    unwrap_x_title,
 )
 
 # Set by `_blob_store` so the seed helpers can attach readable snapshot blobs.
@@ -277,3 +279,120 @@ def test_repair_survives_an_unreadable_snapshot_blob(test_db, test_blob_store):
     # The blob is unreadable, so no snapshot author resolves; nothing is provably
     # author-derived and nothing is destroyed.
     assert result["repaired"] == 0
+
+
+def test_decode_html_entities():
+    assert decode_html_entities("OpenAI on X: &quot;Hello&quot;") == 'OpenAI on X: "Hello"'
+    assert decode_html_entities("Latham &amp; Watkins") == "Latham & Watkins"
+    assert decode_html_entities("Joel&#39;s Test") == "Joel's Test"
+    assert decode_html_entities("NVIDIA&#x27;s Parakeet") == "NVIDIA's Parakeet"
+    assert decode_html_entities("Title &ndash; Subtitle") == "Title – Subtitle"
+    assert decode_html_entities("is &lt;10mb") == "is <10mb"
+    # Double-encoded entities
+    assert decode_html_entities("Latham &amp;amp; Watkins") == "Latham & Watkins"
+    assert decode_html_entities("is &amp;lt;10mb") == "is <10mb"
+    # Plain & is preserved
+    assert decode_html_entities("https://example.com?a=1&b=2") == "https://example.com?a=1&b=2"
+    assert decode_html_entities(None) == ""
+
+
+def test_unwrap_x_title_standard():
+    res = unwrap_x_title('OpenAI on X: "Welcome to GPT-6" / X')
+    assert res == ("Welcome to GPT-6", "OpenAI")
+
+    res_ent = unwrap_x_title("calle on X: &quot;built a malware scanner using laya&quot; / X")
+    assert res_ent == ("built a malware scanner using laya", "calle")
+
+
+def test_unwrap_x_title_ellipsis_and_truncation():
+    title = (
+        'OpenAI on X: "Please welcome GPT-6 Sol and GPT-6 Luna to the GPT-6 universe. '
+        "GPT-6 Sol and Luna build on the advances behind GPT-6 Astra, bringing much of "
+        "its strengths into faster and more affordable models to support work at scale. … / X"
+    )
+    res = unwrap_x_title(title)
+    assert res is not None
+    unwrapped, author = res
+    assert author == "OpenAI"
+    assert unwrapped.startswith("Please welcome GPT-6 Sol")
+    assert unwrapped.endswith("\u2026")
+    assert len(unwrapped) <= 79
+
+    # Three-dot truncation
+    res_dots = unwrap_x_title('Author on X: "Text cut off here... / X')
+    assert res_dots is not None
+    assert res_dots[1] == "Author"
+    assert "Text cut off here" in res_dots[0]
+
+
+def test_unwrap_x_title_embedded_quotes():
+    res = unwrap_x_title('Bob on X: "He said "hello" to me" / X')
+    assert res == ('He said "hello" to me', "Bob")
+
+    res_end = unwrap_x_title('Carol on X: "Quotes at end "here"" / X')
+    assert res_end == ('Quotes at end "here"', "Carol")
+
+
+def test_unwrap_x_title_non_matching():
+    assert unwrap_x_title("Latham & Watkins") is None
+    assert unwrap_x_title("Discussion on X: An Analysis") is None
+    assert unwrap_x_title('on X: "No author" / X') is None
+    assert unwrap_x_title('OpenAI on X: "No trailing slash X"') is None
+    assert unwrap_x_title(None) is None
+
+
+def test_repair_titles_html_entities(test_db, test_blob_store):
+    with test_db.transaction() as conn:
+        conn.execute(
+            """INSERT INTO resources (id, canonical_url, url_hash, identity_key, title, author,
+                                      primary_form, review_state, is_deleted, created_at, updated_at)
+               VALUES ('res_ent', 'https://example.com/article', 'h_ent', 'url:ent',
+                       'Latham &amp; Watkins &ndash; Law', 'Author', 'article', 'unreviewed', 0,
+                       '2026-01-01', '2026-01-01');"""
+        )
+        reindex_object_document(conn, "resource", "res_ent")
+
+    result = repair_author_derived_titles(test_db, test_blob_store)
+    assert result["repaired"] == 1
+    assert result["counts"]["html_entities"] == 1
+    assert result["counts"]["x_wrappers"] == 0
+
+    with test_db.connection() as conn:
+        row = conn.execute("SELECT title FROM resources WHERE id='res_ent';").fetchone()
+        assert row["title"] == "Latham & Watkins – Law"
+
+        fts_row = conn.execute(
+            "SELECT title FROM search_documents WHERE object_type='resource' AND object_id='res_ent';"
+        ).fetchone()
+        assert fts_row["title"] == "Latham & Watkins – Law"
+
+
+def test_repair_titles_x_wrapper_and_author_assignment(test_db, test_blob_store):
+    with test_db.transaction() as conn:
+        conn.execute(
+            """INSERT INTO resources (id, canonical_url, url_hash, identity_key, title, author,
+                                      primary_form, review_state, is_deleted, created_at, updated_at)
+               VALUES ('res_x_wrap', 'https://x.com/OpenAI/status/123', 'h_x', 'url:x',
+                       'OpenAI on X: &quot;Please welcome GPT-6 Sol and Luna&quot; / X', NULL,
+                       'x-post', 'unreviewed', 0, '2026-01-01', '2026-01-01');"""
+        )
+        reindex_object_document(conn, "resource", "res_x_wrap")
+
+    result = repair_author_derived_titles(test_db, test_blob_store)
+    assert result["repaired"] == 1
+    assert result["counts"]["x_wrappers"] == 1
+    assert result["counts"]["html_entities"] == 1
+
+    with test_db.connection() as conn:
+        row = conn.execute("SELECT title, author FROM resources WHERE id='res_x_wrap';").fetchone()
+        assert row["title"] == "Please welcome GPT-6 Sol and Luna"
+        assert row["author"] == "OpenAI"
+
+        fts_row = conn.execute(
+            "SELECT title FROM search_documents WHERE object_type='resource' AND object_id='res_x_wrap';"
+        ).fetchone()
+        assert fts_row["title"] == "Please welcome GPT-6 Sol and Luna"
+
+    # Second run must be idempotent
+    second = repair_author_derived_titles(test_db, test_blob_store)
+    assert second["repaired"] == 0

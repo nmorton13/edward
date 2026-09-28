@@ -293,7 +293,7 @@ def capture_item(
     # 7.5 Queue Embed Processing Job for capture note/text (regardless of resource linkage)
     embed_text = (input_data.note or "") + ("\n\n" + input_data.text if input_data.text else "")
     embed_text = embed_text.strip()
-    if embed_text:
+    if embed_text or not resource_id:
         emb_job_id = generate_id("job")
         emb_job_key = make_job_key("embed", capture_id)
         conn.execute(

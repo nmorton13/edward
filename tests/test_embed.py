@@ -7,10 +7,13 @@ from edward.services.embed import (
     DEFAULT_EMBEDDING_MODEL,
     chunk_markdown_text,
     compute_cosine_similarity,
+    compute_embedding_input_hash,
     deserialize_vector,
     deterministic_embedding,
+    embed_capture,
     embed_resource,
     generate_embedding,
+    get_capture_embedding_text_and_hash,
     get_configured_embedding_model,
     search_vector,
     serialize_vector,
@@ -240,3 +243,153 @@ Using 4-bit and 8-bit integer quantization reduces VRAM requirements significant
             "SELECT * FROM embeddings WHERE object_id = 'res_e2e';"
         ).fetchall()
         assert len(embeddings) == 1
+
+
+def test_capture_embed_from_linked_resource(test_db: Database):
+    """An empty-body capture with an extracted linked resource gets an embedding from the resource."""
+    with test_db.transaction() as conn:
+        conn.execute(
+            """
+            INSERT INTO captures (id, origin_namespace, collection_channel, collector, acquisition_method, retrieved_at, raw_content, user_note, created_at, updated_at)
+            VALUES ('cap_empty', 'web', 'browser', 'cli', 'manual', '2026-01-01', '', '', '2026-01-01', '2026-01-01');
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO resources (id, identity_key, title, created_at, updated_at)
+            VALUES ('res_linked_1', 'url:linked1', 'Linked Resource Title', '2026-01-01', '2026-01-01');
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO capture_resources (capture_id, resource_id, created_at)
+            VALUES ('cap_empty', 'res_linked_1', '2026-01-01');
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO resource_contents (id, resource_id, content_hash, clean_text, extractor, extractor_version, char_count, created_at)
+            VALUES ('rc_linked_1', 'res_linked_1', 'hash_123', 'Extracted substance from linked web page.', 'readability', '1.0', 40, '2026-01-01');
+            """
+        )
+        emb_id = embed_capture(conn, "cap_empty")
+        assert emb_id is not None
+
+    with test_db.connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM embeddings WHERE object_type = 'capture' AND object_id = 'cap_empty';"
+        ).fetchone()
+        assert row is not None
+        assert row["dimensions"] > 0
+        assert row["embedding_blob"] is not None
+        text, _ = get_capture_embedding_text_and_hash(conn, "cap_empty")
+        assert "Extracted substance from linked web page" in text
+        import hashlib
+
+        assert row["input_hash"] == hashlib.sha256(text[:1500].encode("utf-8")).hexdigest()
+
+
+def test_capture_embedding_input_hash_invalidation(test_db: Database):
+    """Input hash incorporates linked resource content hashes and updates on re-extraction."""
+    with test_db.transaction() as conn:
+        conn.execute(
+            """
+            INSERT INTO captures (id, origin_namespace, collection_channel, collector, acquisition_method, retrieved_at, raw_content, user_note, created_at, updated_at)
+            VALUES ('cap_dyn', 'web', 'browser', 'cli', 'manual', '2026-01-01', '', '', '2026-01-01', '2026-01-01');
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO resources (id, identity_key, title, created_at, updated_at)
+            VALUES ('res_dyn', 'url:dyn', 'Dynamic Title', '2026-01-01', '2026-01-01');
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO capture_resources (capture_id, resource_id, created_at)
+            VALUES ('cap_dyn', 'res_dyn', '2026-01-01');
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO resource_contents (id, resource_id, content_hash, clean_text, extractor, extractor_version, char_count, created_at)
+            VALUES ('rc_v1', 'res_dyn', 'hash_v1', 'Version 1 body', 'test', '1.0', 14, '2026-01-01T10:00:00Z');
+            """
+        )
+        h1 = compute_embedding_input_hash(conn, capture_id="cap_dyn")
+        assert h1 is not None
+
+        # Add a newer extraction with a different content hash
+        conn.execute(
+            """
+            INSERT INTO resource_contents (id, resource_id, content_hash, clean_text, extractor, extractor_version, char_count, created_at)
+            VALUES ('rc_v2', 'res_dyn', 'hash_v2', 'Version 2 updated body', 'test', '1.0', 22, '2026-01-01T12:00:00Z');
+            """
+        )
+        h2 = compute_embedding_input_hash(conn, capture_id="cap_dyn")
+        assert h2 is not None
+        assert h1 != h2
+
+
+def test_capture_with_no_substance_returns_none(test_db: Database):
+    """Capture with no own text and no extractable linked resources returns None and does not embed."""
+    with test_db.transaction() as conn:
+        conn.execute(
+            """
+            INSERT INTO captures (id, origin_namespace, collection_channel, collector, acquisition_method, retrieved_at, raw_content, user_note, created_at, updated_at)
+            VALUES ('cap_bare', 'web', 'browser', 'cli', 'manual', '2026-01-01', '', '', '2026-01-01', '2026-01-01');
+            """
+        )
+        text, h = get_capture_embedding_text_and_hash(conn, "cap_bare")
+        assert text is None
+        assert h is None
+        assert embed_capture(conn, "cap_bare") is None
+
+
+def test_cli_reindex_captures(test_db: Database, monkeypatch):
+    import json
+
+    from typer.testing import CliRunner
+
+    from edward.cli import app
+
+    monkeypatch.setenv("EDWARD_DB_PATH", str(test_db.db_path))
+
+    with test_db.transaction() as conn:
+        conn.execute(
+            """
+            INSERT INTO captures (id, origin_namespace, collection_channel, collector, acquisition_method, retrieved_at, raw_content, user_note, is_deleted, created_at, updated_at)
+            VALUES ('cap_cli_reindex', 'web', 'browser', 'cli', 'manual', '2026-01-01', '', '', 0, '2026-01-01', '2026-01-01');
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO resources (id, identity_key, title, is_deleted, created_at, updated_at)
+            VALUES ('res_cli_reindex', 'url:cli_reindex', 'Resource Title for Reindex', 0, '2026-01-01', '2026-01-01');
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO capture_resources (capture_id, resource_id, created_at)
+            VALUES ('cap_cli_reindex', 'res_cli_reindex', '2026-01-01');
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO resource_contents (id, resource_id, content_hash, clean_text, extractor, extractor_version, char_count, created_at)
+            VALUES ('rc_cli', 'res_cli_reindex', 'hash_cli', 'Text to embed via CLI reindex', 'test', '1.0', 30, '2026-01-01');
+            """
+        )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["reindex", "--captures", "--json"])
+    assert result.exit_code == 0
+    data = json.loads(result.stdout)
+    assert data["status"] == "completed"
+    assert data["rebuilt_embedded_captures"] >= 1
+
+    with test_db.connection() as conn:
+        emb = conn.execute(
+            "SELECT * FROM embeddings WHERE object_type = 'capture' AND object_id = 'cap_cli_reindex';"
+        ).fetchone()
+        assert emb is not None

@@ -19,6 +19,7 @@ Edward is a local-first research memory and writing workspace. This skill is the
 - Edward's built-in embeddings run locally. Classification and answer generation are separate. Follow Edward's configured privacy policy before sending private material to a hosted provider.
 - **No model runs by default.** `ask`, finding extraction, and outline proposals are all deterministic unless a model is explicitly configured. Edward is memory, not a mind: the calling agent does the reasoning. Never imply that Edward thought about something on its own.
 - `purge-jobs` deletes from a queue shared by every stage. It requires `--yes`, offers `--dry-run`, and refuses to run if the delete would touch a stage other than the one named. Never use it to tidy up records you created while testing without asking.
+- **Scratch Library for Probes & Tests**: Capability probes, smoke tests, and experiments must run against an isolated scratch library (`EDWARD_DATA_DIR=$(mktemp -d)`), never the default data dir (`~/.edward`). Probes or agent trial runs must never write test captures or throwaway projects into the user's real library.
 
 ## What agents can do
 

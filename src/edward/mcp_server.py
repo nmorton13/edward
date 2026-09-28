@@ -9,18 +9,27 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
+import sys
 from pathlib import Path
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 
 from edward.blobs import BlobStore
-from edward.db import Database, get_default_data_dir, get_default_db_path
+from edward.db import (
+    Database,
+    get_default_data_dir,
+    get_default_db_path,
+    is_default_data_dir,
+    is_test_name,
+    is_test_namespace,
+)
 from edward.models import CaptureInput
 from edward.services.answer import answer_question
 from edward.services.bundle import import_research_bundle, ingest_markdown_report
 from edward.services.capture import capture_item
 from edward.services.diagnostics import run_doctor
+from edward.services.embed import find_similar
 from edward.services.intents import accept_intent, load_intent_questions
 from edward.services.lifecycle import (
     add_annotation,
@@ -125,6 +134,31 @@ def create_mcp_server(
                 project=project,
             )
             return response.model_dump()
+
+    @server.tool(name="edward_similar")
+    def edward_similar(
+        object_id: str,
+        limit: int = 20,
+        type: str | None = None,
+        exclude_project: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Find items similar in meaning to an existing capture, resource, or finding.
+
+        Uses the item's stored vector embedding without re-embedding.
+        Returns a list of hits with object_type, object_id, title, similarity,
+        and capture_id (for resources).
+        Excludes the item itself, soft-deleted records, and optionally items
+        in a specified project.
+        """
+        database, _ = _get_services(db, blob_store)
+        with database.connection() as conn:
+            return find_similar(
+                conn,
+                object_id=object_id,
+                limit=limit,
+                object_type=type,
+                exclude_project=exclude_project,
+            )
 
     @server.tool(name="edward_show")
     def edward_show(object_id: str) -> dict[str, Any]:
@@ -321,9 +355,22 @@ def create_mcp_server(
             collector="edward-mcp",
         )
 
+        is_test_run = is_test_namespace(origin) and is_default_data_dir()
+        if is_test_run:
+            msg = (
+                f"Warning: Capture origin '{origin}' appears to be test data, but Edward is using the default library ({get_default_data_dir()}). "
+                "Probes and experiments must run against a scratch library with EDWARD_DATA_DIR=$(mktemp -d)."
+            )
+            sys.stderr.write(f"{msg}\n")
+
         with database.transaction() as conn:
             try:
                 res = capture_item(conn, input_data, attachment_info=attachment_info)
+                if is_test_run and isinstance(res, dict):
+                    res["warning"] = (
+                        f"Capture origin '{origin}' appears to be test data, but Edward is using the default library ({get_default_data_dir()}). "
+                        "Probes and experiments must run against a scratch library with EDWARD_DATA_DIR=$(mktemp -d)."
+                    )
                 return res
             except Exception as e:
                 return {"error": str(e)}
@@ -501,11 +548,25 @@ def create_mcp_server(
         title: str, brief: str | None = None, slug: str | None = None
     ) -> dict[str, Any]:
         """Create a new research and writing project workspace."""
+        is_test_run = (is_test_name(title) or is_test_name(slug)) and is_default_data_dir()
+        if is_test_run:
+            msg = (
+                f"Warning: Project '{title}' appears to be test/probe data, but Edward is using the default library ({get_default_data_dir()}). "
+                "Probes and experiments must run against a scratch library with EDWARD_DATA_DIR=$(mktemp -d)."
+            )
+            sys.stderr.write(f"{msg}\n")
+
         database, _ = _get_services(db, blob_store)
         try:
             with database.transaction() as conn:
                 project = create_project(conn, title=title, brief=brief, slug=slug)
-                return project.model_dump(mode="json")
+                res = project.model_dump(mode="json")
+                if is_test_run:
+                    res["warning"] = (
+                        f"Project '{title}' appears to be test/probe data, but Edward is using the default library ({get_default_data_dir()}). "
+                        "Probes and experiments must run against a scratch library with EDWARD_DATA_DIR=$(mktemp -d)."
+                    )
+                return res
         except Exception as e:
             return {"error": str(e)}
 

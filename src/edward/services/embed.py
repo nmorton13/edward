@@ -18,6 +18,18 @@ logger = logging.getLogger(__name__)
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 
 
+class ItemNotFoundError(ValueError):
+    """Raised when the target item for similarity search does not exist or is deleted."""
+
+    pass
+
+
+class ItemNotEmbeddedError(ValueError):
+    """Raised when the target item has no embedding."""
+
+    pass
+
+
 # ---------------------------------------------------------------------------
 # 1. Structural Text Chunker
 # ---------------------------------------------------------------------------
@@ -310,6 +322,78 @@ def generate_embedding(
 # ---------------------------------------------------------------------------
 
 
+def get_capture_embedding_text_and_hash(
+    conn: sqlite3.Connection,
+    capture_id: str,
+) -> tuple[str | None, str | None]:
+    """Resolve embedding input text and deterministic hash for a capture.
+
+    If the capture has text of its own (user_note or raw_content), that text is used.
+    If the capture has no text of its own, its text is built from linked resources
+    (latest resource_contents.clean_text, falling back to resource title), ordered
+    deterministically (cr.created_at ASC, r.id ASC). Resource content hashes are
+    incorporated into the input hash, ensuring the capture re-embeds when a linked
+    resource is re-extracted.
+    Returns (None, None) if neither the capture nor its linked resources have text.
+    """
+    cap_row = conn.execute(
+        "SELECT raw_content, user_note FROM captures WHERE id = ?;",
+        (capture_id,),
+    ).fetchone()
+    if not cap_row:
+        return None, None
+
+    own_text = ((cap_row["user_note"] or "") + ("\n\n" + (cap_row["raw_content"] or ""))).strip()
+    if own_text:
+        input_hash = hashlib.sha256(own_text.encode("utf-8")).hexdigest()
+        return own_text, input_hash
+
+    # Fall back to linked resources in deterministic order
+    res_rows = conn.execute(
+        """
+        SELECT r.id AS resource_id, r.title AS title,
+               rc.clean_text AS clean_text, rc.content_hash AS content_hash
+        FROM capture_resources cr
+        JOIN resources r ON r.id = cr.resource_id
+        LEFT JOIN resource_contents rc ON rc.id = (
+            SELECT id FROM resource_contents
+            WHERE resource_id = r.id
+            ORDER BY created_at DESC LIMIT 1
+        )
+        WHERE cr.capture_id = ? AND r.is_deleted = 0
+        ORDER BY cr.created_at ASC, r.id ASC;
+        """,
+        (capture_id,),
+    ).fetchall()
+
+    if not res_rows:
+        return None, None
+
+    parts: list[str] = []
+    hasher = hashlib.sha256()
+    hasher.update(b"cap_linked:")
+    has_substance = False
+
+    for r in res_rows:
+        res_text = (r["clean_text"] or "").strip()
+        if not res_text and r["title"]:
+            res_text = r["title"].strip()
+        if res_text:
+            parts.append(res_text)
+            has_substance = True
+        hasher.update(r["resource_id"].encode("utf-8"))
+        hasher.update(b":")
+        c_hash = r["content_hash"] or hashlib.sha256((r["title"] or "").encode("utf-8")).hexdigest()
+        hasher.update(c_hash.encode("utf-8"))
+        hasher.update(b":")
+
+    if not has_substance:
+        return None, None
+
+    combined_text = "\n\n".join(parts)
+    return combined_text, hasher.hexdigest()
+
+
 def compute_embedding_input_hash(
     conn: sqlite3.Connection,
     resource_id: str | None = None,
@@ -345,18 +429,8 @@ def compute_embedding_input_hash(
         return hasher.hexdigest()
 
     elif capture_id:
-        cap_row = conn.execute(
-            "SELECT raw_content, user_note FROM captures WHERE id = ?;",
-            (capture_id,),
-        ).fetchone()
-        if not cap_row:
-            return None
-        cap_text = (
-            (cap_row["user_note"] or "") + ("\n\n" + (cap_row["raw_content"] or ""))
-        ).strip()
-        if not cap_text:
-            return None
-        return hashlib.sha256(cap_text.encode("utf-8")).hexdigest()
+        _, input_hash = get_capture_embedding_text_and_hash(conn, capture_id)
+        return input_hash
 
     return None
 
@@ -438,6 +512,143 @@ def compute_cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
+def search_vector_by_vector(
+    conn: sqlite3.Connection,
+    query_vec: list[float] | bytes,
+    limit: int = 20,
+    model: str | None = None,
+    object_type: str | None = None,
+    allowed_types: tuple[str, ...] | list[str] | None = None,
+    exclude_object_ids: set[str] | list[str] | None = None,
+    filter_active_only: bool = False,
+) -> list[dict[str, Any]]:
+    """Search vector embeddings by cosine similarity against an existing vector.
+
+    Shares the sqlite-vec acceleration and Python/numpy fallback paths between
+    query-vector search and item-vector similarity search.
+    """
+    target_model = model if (model and model != "default") else get_configured_embedding_model()
+
+    available = conn.execute(
+        "SELECT 1 FROM embeddings WHERE model = ? LIMIT 1;", (target_model,)
+    ).fetchone()
+    if not available:
+        return []
+
+    if isinstance(query_vec, list):
+        query_blob = serialize_vector(query_vec)
+        vec_list = query_vec
+    else:
+        query_blob = query_vec
+        vec_list = deserialize_vector(query_vec)
+
+    exclude_set = set(exclude_object_ids or [])
+
+    # 1. Try sqlite-vec if loaded
+    from edward.db import HAS_SQLITE_VEC
+
+    if HAS_SQLITE_VEC:
+        try:
+            if filter_active_only:
+                sql = """
+                    SELECT e.id, e.object_type, e.object_id,
+                           (1.0 - vec_distance_cosine(e.embedding_blob, ?)) AS similarity
+                    FROM embeddings e
+                    LEFT JOIN captures c ON e.object_type = 'capture' AND c.id = e.object_id
+                    LEFT JOIN resources r ON e.object_type = 'resource' AND r.id = e.object_id
+                    LEFT JOIN findings f ON e.object_type = 'finding' AND f.id = e.object_id
+                    WHERE e.model = ?
+                      AND (
+                          (e.object_type = 'capture' AND c.id IS NOT NULL AND c.is_deleted = 0) OR
+                          (e.object_type = 'resource' AND r.id IS NOT NULL AND r.is_deleted = 0) OR
+                          (e.object_type = 'finding' AND f.id IS NOT NULL AND f.is_deleted = 0)
+                      )
+                """
+            else:
+                sql = """
+                    SELECT e.id, e.object_type, e.object_id,
+                           (1.0 - vec_distance_cosine(e.embedding_blob, ?)) AS similarity
+                    FROM embeddings e
+                    WHERE e.model = ?
+                """
+            params: list[Any] = [query_blob, target_model]
+            if object_type:
+                sql += " AND e.object_type = ?"
+                params.append(object_type)
+            elif allowed_types:
+                ph = ",".join("?" * len(allowed_types))
+                sql += f" AND e.object_type IN ({ph})"
+                params.extend(allowed_types)
+
+            if exclude_set:
+                ph_ex = ",".join("?" * len(exclude_set))
+                sql += f" AND e.object_id NOT IN ({ph_ex})"
+                params.extend(exclude_set)
+
+            sql += " ORDER BY similarity DESC LIMIT ?;"
+            params.append(limit)
+
+            rows = conn.execute(sql, params).fetchall()
+            return [
+                {
+                    "object_type": r["object_type"],
+                    "object_id": r["object_id"],
+                    "similarity": float(r["similarity"]),
+                    "embedding_id": r["id"],
+                }
+                for r in rows
+            ]
+        except Exception as e:
+            logger.debug("sqlite-vec query failed; falling back to Python similarity: %s", e)
+
+    # 2. Pure Python / numpy fallback
+    if filter_active_only:
+        sql = """
+            SELECT e.id, e.object_type, e.object_id, e.embedding_blob
+            FROM embeddings e
+            LEFT JOIN captures c ON e.object_type = 'capture' AND c.id = e.object_id
+            LEFT JOIN resources r ON e.object_type = 'resource' AND r.id = e.object_id
+            LEFT JOIN findings f ON e.object_type = 'finding' AND f.id = e.object_id
+            WHERE e.model = ?
+              AND (
+                  (e.object_type = 'capture' AND c.id IS NOT NULL AND c.is_deleted = 0) OR
+                  (e.object_type = 'resource' AND r.id IS NOT NULL AND r.is_deleted = 0) OR
+                  (e.object_type = 'finding' AND f.id IS NOT NULL AND f.is_deleted = 0)
+              )
+        """
+    else:
+        sql = "SELECT e.id, e.object_type, e.object_id, e.embedding_blob FROM embeddings e WHERE e.model = ?"
+
+    params = [target_model]
+    if object_type:
+        sql += " AND e.object_type = ?"
+        params.append(object_type)
+    elif allowed_types:
+        ph = ",".join("?" * len(allowed_types))
+        sql += f" AND e.object_type IN ({ph})"
+        params.extend(allowed_types)
+
+    rows = conn.execute(sql, params).fetchall()
+    scored: list[dict[str, Any]] = []
+
+    for r in rows:
+        if r["object_id"] in exclude_set:
+            continue
+        target_vec = deserialize_vector(r["embedding_blob"])
+        sim = compute_cosine_similarity(vec_list, target_vec)
+        scored.append(
+            {
+                "object_type": r["object_type"],
+                "object_id": r["object_id"],
+                "similarity": sim,
+                "embedding_id": r["id"],
+            }
+        )
+
+    scored.sort(key=lambda x: x["similarity"], reverse=True)
+    return scored[:limit]
+
+
 def search_vector(
     conn: sqlite3.Connection,
     query_text: str,
@@ -459,63 +670,205 @@ def search_vector(
         return []
 
     query_vec, _ = generate_embedding(query_text, model=target_model, is_query=True)
-    query_blob = serialize_vector(query_vec)
+    return search_vector_by_vector(
+        conn=conn,
+        query_vec=query_vec,
+        limit=limit,
+        model=target_model,
+        object_type=object_type,
+    )
 
-    # 1. Try sqlite-vec if loaded
-    from edward.db import HAS_SQLITE_VEC
 
-    if HAS_SQLITE_VEC:
-        try:
-            sql = """
-                SELECT id, object_type, object_id,
-                       (1.0 - vec_distance_cosine(embedding_blob, ?)) AS similarity
-                FROM embeddings
-                WHERE model = ?
+def find_similar(
+    conn: sqlite3.Connection,
+    object_id: str,
+    limit: int = 20,
+    model: str | None = None,
+    object_type: str | None = None,
+    exclude_project: str | None = None,
+) -> list[dict[str, Any]]:
+    """Find items similar in meaning to an existing capture, resource, or finding.
+
+    Reuses the stored vector embedding of the source item.
+    Excludes the item itself, soft-deleted rows, and optionally items in a specified project.
+    Returns list of dicts with: 'object_type', 'object_id', 'title', 'similarity', 'capture_id'.
+    """
+    if object_type and object_type not in ("capture", "resource", "finding"):
+        raise ValueError(
+            f"Invalid type '{object_type}'. Allowed values: capture, resource, finding"
+        )
+
+    if limit <= 0:
+        raise ValueError("Limit must be greater than 0")
+
+    target_model = model if (model and model != "default") else get_configured_embedding_model()
+
+    # 1. Locate source item and determine type
+    cap = conn.execute("SELECT id, is_deleted FROM captures WHERE id = ?;", (object_id,)).fetchone()
+    res = conn.execute(
+        "SELECT id, is_deleted FROM resources WHERE id = ?;", (object_id,)
+    ).fetchone()
+    fin = conn.execute("SELECT id, is_deleted FROM findings WHERE id = ?;", (object_id,)).fetchone()
+
+    if not cap and not res and not fin:
+        raise ItemNotFoundError(f"Item '{object_id}' not found")
+
+    item_row = cap or res or fin
+    if item_row["is_deleted"] == 1:
+        raise ItemNotFoundError(f"Item '{object_id}' is deleted")
+
+    source_type = "capture" if cap else ("resource" if res else "finding")
+
+    # 2. Retrieve source embedding (reusing stored embedding without re-embedding)
+    emb_row = conn.execute(
+        """
+        SELECT embedding_blob FROM embeddings
+        WHERE object_type = ? AND object_id = ? AND model = ?
+        ORDER BY created_at DESC LIMIT 1;
+        """,
+        (source_type, object_id, target_model),
+    ).fetchone()
+
+    if not emb_row:
+        any_emb = conn.execute(
+            "SELECT 1 FROM embeddings WHERE object_type = ? AND object_id = ? LIMIT 1;",
+            (source_type, object_id),
+        ).fetchone()
+        if any_emb:
+            raise ItemNotEmbeddedError(
+                f"Item '{object_id}' has no embedding for model '{target_model}'"
+            )
+        raise ItemNotEmbeddedError(f"Item '{object_id}' has no embedding")
+
+    # 3. Determine exclusions
+    exclude_ids: set[str] = {object_id}
+
+    if exclude_project:
+        proj = conn.execute(
+            "SELECT id, slug FROM projects WHERE (slug = ? OR id = ?) AND is_deleted = 0;",
+            (exclude_project, exclude_project),
+        ).fetchone()
+        if not proj:
+            from edward.services.projects import ProjectNotFoundError
+
+            raise ProjectNotFoundError(f"Project '{exclude_project}' not found")
+
+        po_rows = conn.execute(
             """
-            params: list[Any] = [query_blob, target_model]
-            if object_type:
-                sql += " AND object_type = ?"
-                params.append(object_type)
-            sql += " ORDER BY similarity DESC LIMIT ?;"
-            params.append(limit)
+            SELECT object_type, object_id FROM project_objects
+            WHERE project_id = ? AND membership_status IN ('accepted', 'candidate');
+            """,
+            (proj["id"],),
+        ).fetchall()
+        for r in po_rows:
+            exclude_ids.add(r["object_id"])
 
-            rows = conn.execute(sql, params).fetchall()
-            return [
-                {
-                    "object_type": r["object_type"],
-                    "object_id": r["object_id"],
-                    "similarity": float(r["similarity"]),
-                    "embedding_id": r["id"],
-                }
-                for r in rows
-            ]
-        except Exception as e:
-            logger.debug("sqlite-vec query failed; falling back to Python similarity: %s", e)
+        if exclude_ids:
+            ph = ",".join("?" * len(exclude_ids))
+            cr_res = conn.execute(
+                f"SELECT resource_id FROM capture_resources WHERE capture_id IN ({ph});",
+                list(exclude_ids),
+            ).fetchall()
+            for r in cr_res:
+                exclude_ids.add(r["resource_id"])
 
-    # 2. Pure Python fallback
-    sql = "SELECT id, object_type, object_id, embedding_blob FROM embeddings WHERE model = ?"
-    params = [target_model]
-    if object_type:
-        sql += " AND object_type = ?"
-        params.append(object_type)
+            cr_caps = conn.execute(
+                f"SELECT capture_id FROM capture_resources WHERE resource_id IN ({ph});",
+                list(exclude_ids),
+            ).fetchall()
+            for r in cr_caps:
+                exclude_ids.add(r["capture_id"])
 
-    rows = conn.execute(sql, params).fetchall()
-    scored: list[dict[str, Any]] = []
+            fin_rows = conn.execute(
+                f"SELECT id FROM findings WHERE resource_id IN ({ph});",
+                list(exclude_ids),
+            ).fetchall()
+            for r in fin_rows:
+                exclude_ids.add(r["id"])
 
-    for r in rows:
-        target_vec = deserialize_vector(r["embedding_blob"])
-        sim = compute_cosine_similarity(query_vec, target_vec)
-        scored.append(
+    # 4. Search vector by vector
+    raw_hits = search_vector_by_vector(
+        conn=conn,
+        query_vec=emb_row["embedding_blob"],
+        limit=limit,
+        model=target_model,
+        object_type=object_type,
+        allowed_types=("capture", "resource", "finding"),
+        exclude_object_ids=exclude_ids,
+        filter_active_only=True,
+    )
+
+    # 5. Enrich hits with title and capture_id
+    enriched: list[dict[str, Any]] = []
+    for hit in raw_hits:
+        h_type = hit["object_type"]
+        h_id = hit["object_id"]
+        sim = round(float(hit["similarity"]), 4)
+
+        title = ""
+        capture_id: str | None = None
+
+        if h_type == "resource":
+            r_info = conn.execute(
+                "SELECT title, canonical_url FROM resources WHERE id = ?;", (h_id,)
+            ).fetchone()
+            title = (
+                (r_info["title"] if r_info else None)
+                or (r_info["canonical_url"] if r_info else None)
+                or "Untitled Resource"
+            )
+
+            cr_row = conn.execute(
+                "SELECT capture_id FROM capture_resources WHERE resource_id = ? ORDER BY created_at ASC LIMIT 1;",
+                (h_id,),
+            ).fetchone()
+            capture_id = cr_row["capture_id"] if cr_row else None
+
+        elif h_type == "capture":
+            c_info = conn.execute(
+                """
+                SELECT c.user_note, c.raw_content, r.title AS res_title
+                FROM captures c
+                LEFT JOIN capture_resources cr ON cr.capture_id = c.id
+                LEFT JOIN resources r ON r.id = cr.resource_id AND r.is_deleted = 0
+                WHERE c.id = ?
+                ORDER BY cr.created_at ASC LIMIT 1;
+                """,
+                (h_id,),
+            ).fetchone()
+            title = (
+                (c_info["user_note"] if c_info and c_info["user_note"] else None)
+                or (c_info["res_title"] if c_info and c_info["res_title"] else None)
+                or (
+                    c_info["raw_content"][:80].strip() if c_info and c_info["raw_content"] else None
+                )
+                or "Untitled Capture"
+            )
+            capture_id = h_id
+
+        elif h_type == "finding":
+            f_info = conn.execute(
+                "SELECT statement, resource_id FROM findings WHERE id = ?;", (h_id,)
+            ).fetchone()
+            title = (f_info["statement"] if f_info else None) or "Untitled Finding"
+            if f_info and f_info["resource_id"]:
+                cr_row = conn.execute(
+                    "SELECT capture_id FROM capture_resources WHERE resource_id = ? ORDER BY created_at ASC LIMIT 1;",
+                    (f_info["resource_id"],),
+                ).fetchone()
+                capture_id = cr_row["capture_id"] if cr_row else None
+
+        enriched.append(
             {
-                "object_type": r["object_type"],
-                "object_id": r["object_id"],
+                "object_type": h_type,
+                "object_id": h_id,
+                "title": title,
                 "similarity": sim,
-                "embedding_id": r["id"],
+                "capture_id": capture_id,
             }
         )
 
-    scored.sort(key=lambda x: x["similarity"], reverse=True)
-    return scored[:limit]
+    return enriched
 
 
 def embed_resource(
@@ -588,6 +941,26 @@ def embed_resource(
             emb_ids.append(f_emb_id)
 
     return emb_ids
+
+
+def embed_capture(
+    conn: sqlite3.Connection,
+    capture_id: str,
+    model: str | None = None,
+) -> str | None:
+    """Compute and store vector embedding for a capture, using own text or linked resources."""
+    target_model = model if (model and model != "default") else get_configured_embedding_model()
+    text, _ = get_capture_embedding_text_and_hash(conn, capture_id)
+    if not text:
+        return None
+    doc_text = text[:1500]
+    return store_embedding(
+        conn=conn,
+        object_type="capture",
+        object_id=capture_id,
+        text=doc_text,
+        model=target_model,
+    )
 
 
 def persist_precomputed_embeddings(
