@@ -1064,6 +1064,11 @@ def process_command(
         )
         for reason, count in sorted(result.get("skipped", {}).items()):
             out_console.print(f"  skipped ({reason}): {count}")
+        if result.get("rate_limited"):
+            err_console.print(
+                "[yellow]Stopped early: the model provider is rate limiting requests. "
+                "The job was re-queued without using a retry; run again later.[/yellow]"
+            )
 
 
 @app.command("retry")

@@ -4,6 +4,8 @@ Supports separate Answer and Embedding configurations, strict Pydantic output
 validation with bounded correction retries, privacy policy enforcement, and diagnostic logging.
 """
 
+import datetime
+import email.utils
 import json
 import logging
 import os
@@ -35,6 +37,32 @@ class LLMConnectionError(LLMError):
     """Raised when unable to connect to LLM endpoint."""
 
     pass
+
+
+class LLMRateLimitError(LLMConnectionError):
+    """Raised on HTTP 429. ``retry_after`` is the provider's hint in seconds, when it sent one."""
+
+    def __init__(self, message: str, retry_after: float | None = None):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+def parse_retry_after(value: str | None) -> float | None:
+    """Seconds to wait from a Retry-After header (delta-seconds or HTTP date), or None."""
+    if not value:
+        return None
+    value = value.strip()
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        when = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=datetime.UTC)
+    return max(0.0, (when - datetime.datetime.now(datetime.UTC)).total_seconds())
 
 
 class LLMResponseValidationError(LLMError):
@@ -159,6 +187,11 @@ class LLMClient:
             except httpx.RequestError as e:
                 raise LLMConnectionError(f"LLM connection error: {e}") from e
 
+            if resp.status_code == 429:
+                raise LLMRateLimitError(
+                    f"LLM endpoint rate limited the request (429): {resp.text[:200]}",
+                    retry_after=parse_retry_after(resp.headers.get("Retry-After")),
+                )
             if resp.status_code != 200:
                 raise LLMConnectionError(
                     f"LLM endpoint returned status {resp.status_code}: {resp.text[:200]}"

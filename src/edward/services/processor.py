@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 from edward.blobs import BlobStore
+from edward.classifiers.providers.typesafe import TypeSafeRateLimitError
 from edward.models import generate_id, make_job_key
 from edward.services.classification import (
     classify_target,
@@ -21,6 +22,7 @@ from edward.services.classification import (
     run_classification_pipeline,
 )
 from edward.services.extract import ExtractionResult, clean_html_simple, extract_content
+from edward.services.llm import LLMRateLimitError
 from edward.services.network import NetworkError, safe_fetch_url
 from edward.services.ocr import OCR_STAGE, format_ocr_passage, ocr_image_bytes
 from edward.services.pdf import PDF_STAGE, extract_pdf_text
@@ -827,6 +829,20 @@ def _perform_job_work(
         raise ValueError(f"Unknown processing stage '{stage}'")
 
 
+# A rate limit says nothing about the job itself, so it never consumes an attempt.
+RATE_LIMIT_DEFAULT_DELAY_SEC = 60.0
+RATE_LIMIT_MAX_DELAY_SEC = 900.0
+
+
+def _rate_limit_delay(error: Exception | None) -> float | None:
+    """Seconds to wait before retrying a rate-limited job, or None if not rate limited."""
+    if not isinstance(error, (LLMRateLimitError, TypeSafeRateLimitError)):
+        return None
+    hint = error.retry_after
+    delay = hint if hint and hint > 0 else RATE_LIMIT_DEFAULT_DELAY_SEC
+    return min(max(delay, 1.0), RATE_LIMIT_MAX_DELAY_SEC)
+
+
 def _persist_job_result(
     conn: sqlite3.Connection,
     blob_store: BlobStore,
@@ -838,7 +854,9 @@ def _persist_job_result(
 ) -> str:
     """Commit results of work and schedule downstream jobs in a short transaction, or record retry/failure.
 
-    Returns one of: 'completed', 'pending', 'failed', 'lost-lease'.
+    Returns one of: 'completed', 'pending', 'failed', 'lost-lease', 'rate-limited'.
+    A rate-limited job goes back to pending after the provider's delay without
+    consuming an attempt.
     """
     job_id = job["id"]
     resource_id = job.get("resource_id")
@@ -863,6 +881,38 @@ def _persist_job_result(
         if cap_row:
             capture_id = cap_row["capture_id"]
             job["capture_id"] = capture_id
+
+    rate_delay = _rate_limit_delay(job_error)
+    if rate_delay is not None:
+        next_avail = (
+            datetime.datetime.now(datetime.UTC) + datetime.timedelta(seconds=rate_delay)
+        ).isoformat()
+        err_str = sanitize_error_message(str(job_error))
+        fence = (
+            " AND lease_owner = ? AND (lease_expires_at IS NULL OR lease_expires_at > ?)"
+            if owner
+            else ""
+        )
+        params: list[Any] = [err_str, next_avail, now_iso, job_id]
+        if owner:
+            params.extend([owner, now_iso])
+        cursor = conn.execute(
+            f"""
+            UPDATE processing_jobs
+            SET status = 'pending',
+                last_error = ?,
+                available_at = ?,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                updated_at = ?
+            WHERE id = ? AND status = 'running'{fence};
+            """,
+            params,
+        )
+        if cursor.rowcount == 0:
+            conn.rollback()
+            return "lost-lease"
+        return "rate-limited"
 
     failed_result = bool(work_result and work_result.get("status") == "failed")
     if job_error is not None or failed_result:
@@ -2349,12 +2399,14 @@ def process_pending_jobs(
 
     ``completed`` includes summarize jobs that were skipped without a model call;
     ``skipped`` breaks those down by reason (``short``, ``duplicate``).
+    A rate limit stops the run early; ``rate_limited`` is 1 when that happened.
     """
     w_id = worker_id or f"worker_{uuid.uuid4().hex[:8]}"
     completed = 0
     failed = 0
     pending = 0
     lost_lease = 0
+    rate_limited = 0
     skipped: dict[str, int] = {}
 
     for _ in range(limit):
@@ -2422,6 +2474,10 @@ def process_pending_jobs(
             pending += 1
         elif outcome == "lost-lease":
             lost_lease += 1
+        elif outcome == "rate-limited":
+            # Every further job would hit the same limit; stop and let the delay pass.
+            rate_limited += 1
+            break
 
     with _get_transaction(db_or_conn) as conn:
         remaining = conn.execute(
@@ -2435,6 +2491,7 @@ def process_pending_jobs(
         "lost_lease": lost_lease,
         "remaining_pending": remaining,
         "skipped": skipped,
+        "rate_limited": rate_limited,
     }
 
 
