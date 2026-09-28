@@ -381,13 +381,14 @@ def _load_job_context(conn: sqlite3.Connection, job: dict[str, Any]) -> dict[str
         if not resource_id:
             raise ValueError("Stage 'summarize' requires resource_id")
         content_row = conn.execute(
-            "SELECT clean_text, summary, content_hash FROM resource_contents WHERE resource_id = ? ORDER BY created_at DESC LIMIT 1;",
+            "SELECT clean_text, summary, summary_source, content_hash FROM resource_contents WHERE resource_id = ? ORDER BY created_at DESC LIMIT 1;",
             (resource_id,),
         ).fetchone()
         context["text"] = ((content_row["clean_text"] or "").strip()) if content_row else ""
         context["existing_summary"] = (
             (content_row["summary"] or "").strip() if content_row else None
         )
+        context["summary_source"] = content_row["summary_source"] if content_row else None
         context["content_hash"] = content_row["content_hash"] if content_row else None
         context["input_hash"] = content_row["content_hash"] if content_row else None
 
@@ -666,10 +667,24 @@ def _perform_job_work(
         from edward.services.summarize import generate_summary
 
         existing = context.get("existing_summary")
-        if existing and existing.strip():
+        existing_source = context.get("summary_source")
+
+        # Bundle and human summaries are never overwritten
+        if existing and existing_source in ("bundle", "human"):
             return {
                 "status": "completed",
                 "summary": existing.strip(),
+                "summary_source": existing_source,
+                "preserved": True,
+                "input_hash": context.get("input_hash"),
+            }
+
+        # Model summaries are final for the same content hash
+        if existing and existing_source == "model":
+            return {
+                "status": "completed",
+                "summary": existing.strip(),
+                "summary_source": "model",
                 "preserved": True,
                 "input_hash": context.get("input_hash"),
             }
@@ -679,6 +694,7 @@ def _perform_job_work(
             return {
                 "status": "completed",
                 "summary": None,
+                "summary_source": None,
                 "preserved": False,
                 "input_hash": context.get("input_hash"),
             }
@@ -692,6 +708,7 @@ def _perform_job_work(
         return {
             "status": "completed",
             "summary": summary_text,
+            "summary_source": "model",
             "preserved": False,
             "input_hash": context.get("input_hash"),
         }
@@ -1923,12 +1940,17 @@ def _persist_job_result(
             conn.execute(
                 """
                 UPDATE resource_contents
-                SET summary = ?
+                SET summary = ?,
+                    summary_source = 'model'
                 WHERE id = (
                     SELECT id FROM resource_contents
                     WHERE resource_id = ?
                     ORDER BY created_at DESC LIMIT 1
-                ) AND (summary IS NULL OR trim(summary) = '');
+                ) AND (
+                    summary IS NULL
+                    OR trim(summary) = ''
+                    OR summary_source = 'legacy'
+                ) AND (summary_source IS NULL OR summary_source NOT IN ('bundle', 'human'));
                 """,
                 (summary_text, resource_id),
             )

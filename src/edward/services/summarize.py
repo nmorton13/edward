@@ -109,7 +109,7 @@ def enqueue_missing_summarize_jobs(
     if capture_id:
         rows = conn.execute(
             """
-            SELECT r.id AS resource_id, rc.content_hash, rc.summary, cr.capture_id
+            SELECT r.id AS resource_id, rc.content_hash, rc.summary, rc.summary_source, cr.capture_id
             FROM resources r
             JOIN resource_contents rc ON r.id = rc.resource_id
             JOIN capture_resources cr ON r.id = cr.resource_id
@@ -127,7 +127,7 @@ def enqueue_missing_summarize_jobs(
     else:
         rows = conn.execute(
             """
-            SELECT r.id AS resource_id, rc.content_hash, rc.summary,
+            SELECT r.id AS resource_id, rc.content_hash, rc.summary, rc.summary_source,
                    (SELECT cr.capture_id FROM capture_resources cr
                     WHERE cr.resource_id = r.id ORDER BY cr.created_at DESC LIMIT 1) AS capture_id
             FROM resources r
@@ -146,14 +146,18 @@ def enqueue_missing_summarize_jobs(
     for r in rows:
         res_id = r["resource_id"]
         c_hash = r["content_hash"]
-        has_summary = bool(r["summary"] and r["summary"].strip())
+        summary_val = (r["summary"] or "").strip()
+        source = r["summary_source"]
         cap_id = r["capture_id"]
+
+        is_legacy = bool(summary_val and source == "legacy")
+        has_final_summary = bool(summary_val and source in ("bundle", "human", "model"))
 
         job_key = make_job_key(SUMMARIZE_STAGE, res_id)
         job_id = generate_id("job")
 
-        if has_summary:
-            # Already has summary (from bundle, human, or prior run): mark completed
+        if has_final_summary:
+            # Already has final summary (from bundle, human, or model): mark completed
             conn.execute(
                 """
                 INSERT INTO processing_jobs (
@@ -171,7 +175,7 @@ def enqueue_missing_summarize_jobs(
                 (job_id, job_key, cap_id, res_id, c_hash, now_iso, now_iso, now_iso, now_iso),
             )
         else:
-            # Needs a summary: insert or update pending if content changed
+            # Needs a summary (missing or legacy summary): insert or update pending
             cursor = conn.execute(
                 """
                 INSERT INTO processing_jobs (
@@ -181,34 +185,39 @@ def enqueue_missing_summarize_jobs(
                 ON CONFLICT(job_key) DO UPDATE SET
                     capture_id = COALESCE(excluded.capture_id, processing_jobs.capture_id),
                     status = CASE
-                        WHEN (processing_jobs.status = 'completed' AND processing_jobs.input_hash != ?)
+                        WHEN (processing_jobs.status = 'completed' AND (processing_jobs.input_hash != ? OR ? = 1))
                              OR processing_jobs.status = 'failed'
                         THEN 'pending'
                         ELSE processing_jobs.status
                     END,
                     available_at = CASE
-                        WHEN (processing_jobs.status = 'completed' AND processing_jobs.input_hash != ?)
+                        WHEN (processing_jobs.status = 'completed' AND (processing_jobs.input_hash != ? OR ? = 1))
                              OR processing_jobs.status = 'failed'
                         THEN excluded.available_at
                         ELSE processing_jobs.available_at
                     END,
                     attempts = CASE
-                        WHEN (processing_jobs.status = 'completed' AND processing_jobs.input_hash != ?)
+                        WHEN (processing_jobs.status = 'completed' AND (processing_jobs.input_hash != ? OR ? = 1))
                              OR processing_jobs.status = 'failed'
                         THEN 0
                         ELSE processing_jobs.attempts
                     END,
                     last_error = CASE
-                        WHEN (processing_jobs.status = 'completed' AND processing_jobs.input_hash != ?)
+                        WHEN (processing_jobs.status = 'completed' AND (processing_jobs.input_hash != ? OR ? = 1))
                              OR processing_jobs.status = 'failed'
                         THEN NULL
                         ELSE processing_jobs.last_error
                     END,
                     completed_at = CASE
-                        WHEN (processing_jobs.status = 'completed' AND processing_jobs.input_hash != ?)
+                        WHEN (processing_jobs.status = 'completed' AND (processing_jobs.input_hash != ? OR ? = 1))
                              OR processing_jobs.status = 'failed'
                         THEN NULL
                         ELSE processing_jobs.completed_at
+                    END,
+                    input_hash = CASE
+                        WHEN (processing_jobs.status = 'completed' AND ? = 1)
+                        THEN NULL
+                        ELSE processing_jobs.input_hash
                     END,
                     updated_at = excluded.updated_at;
                 """,
@@ -221,10 +230,16 @@ def enqueue_missing_summarize_jobs(
                     now_iso,
                     now_iso,
                     c_hash,
+                    1 if is_legacy else 0,
                     c_hash,
+                    1 if is_legacy else 0,
                     c_hash,
+                    1 if is_legacy else 0,
                     c_hash,
+                    1 if is_legacy else 0,
                     c_hash,
+                    1 if is_legacy else 0,
+                    1 if is_legacy else 0,
                 ),
             )
             if cursor.rowcount > 0:

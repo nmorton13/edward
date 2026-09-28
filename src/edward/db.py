@@ -211,6 +211,19 @@ def execute_migration_statement(conn: sqlite3.Connection, statement: str) -> Non
             return
         if column_name in columns:
             return
+
+    update_match = re.match(
+        r"UPDATE\s+([A-Za-z_]\w*)\s+",
+        statement.strip(),
+        flags=re.IGNORECASE,
+    )
+    if update_match:
+        table_name = update_match.group(1)
+        columns = {row["name"] for row in conn.execute(f'PRAGMA table_info("{table_name}");')}
+        if not columns:
+            # Table does not exist in synthetic or partial schema
+            return
+
     conn.execute(statement)
 
 

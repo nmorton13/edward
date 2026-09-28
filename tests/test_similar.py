@@ -133,9 +133,51 @@ def _setup_similar_corpus(conn):
     )
     store_embedding(conn, "finding", "fin_deleted", "Deleted attention finding statement.")
 
+    # Additional AI cluster outside cap_ai family
+    conn.execute(
+        """
+        INSERT INTO captures (id, origin_namespace, collection_channel, collector, acquisition_method, retrieved_at, raw_content, user_note, is_deleted, created_at, updated_at)
+        VALUES ('cap_neural', 'web', 'browser', 'cli', 'manual', ?, 'Deep neural network architectures and transformer scaling.', 'Neural Notes', 0, ?, ?);
+        """,
+        (now_iso, now_iso, now_iso),
+    )
+    conn.execute(
+        """
+        INSERT INTO resources (id, identity_key, canonical_url, title, is_deleted, created_at, updated_at)
+        VALUES ('res_neural', 'url:neural', 'https://example.com/neural', 'Neural Network Foundations', 0, ?, ?);
+        """,
+        (now_iso, now_iso),
+    )
+    conn.execute(
+        "INSERT INTO capture_resources (capture_id, resource_id, created_at) VALUES ('cap_neural', 'res_neural', ?);",
+        (now_iso,),
+    )
+    conn.execute(
+        """
+        INSERT INTO findings (id, resource_id, statement, is_deleted, created_at, updated_at)
+        VALUES ('fin_neural', 'res_neural', 'Feedforward layers and attention blocks in modern deep learning.', 0, ?, ?);
+        """,
+        (now_iso, now_iso),
+    )
+    store_embedding(
+        conn, "capture", "cap_neural", "Deep neural network architectures and transformer scaling."
+    )
+    store_embedding(
+        conn,
+        "resource",
+        "res_neural",
+        "Neural Network Foundations and deep learning architectures.",
+    )
+    store_embedding(
+        conn,
+        "finding",
+        "fin_neural",
+        "Feedforward layers and attention blocks in modern deep learning.",
+    )
+
 
 def test_similar_for_capture(test_db: Database):
-    """find_similar returns relevant items for a capture, excluding self and deleted records."""
+    """find_similar returns relevant items for a capture, excluding its entire family and deleted records."""
     with test_db.transaction() as conn:
         _setup_similar_corpus(conn)
 
@@ -144,15 +186,18 @@ def test_similar_for_capture(test_db: Database):
         assert len(hits) >= 2
         hit_ids = [h["object_id"] for h in hits]
 
-        # cap_ai must not be in results (self-exclusion)
+        # cap_ai and its own family (res_llm, fin_attn) must be excluded
         assert "cap_ai" not in hit_ids
+        assert "res_llm" not in hit_ids
+        assert "fin_attn" not in hit_ids
+
         # Deleted items must not be in results
         assert "cap_deleted" not in hit_ids
         assert "res_deleted" not in hit_ids
         assert "fin_deleted" not in hit_ids
 
-        # AI-related items should rank high
-        assert "res_llm" in hit_ids
+        # External AI-related items should rank high
+        assert "cap_neural" in hit_ids or "res_neural" in hit_ids or "fin_neural" in hit_ids
 
         # Verify hit schema
         for h in hits:
@@ -162,34 +207,35 @@ def test_similar_for_capture(test_db: Database):
             assert "similarity" in h
             assert "capture_id" in h
 
-        # Check resource hit has linked capture_id
-        res_hit = next(h for h in hits if h["object_id"] == "res_llm")
-        assert res_hit["capture_id"] == "cap_ai"
-        assert res_hit["title"] == "Large Language Models Guide"
-
 
 def test_similar_for_resource(test_db: Database):
-    """find_similar works when given a resource ID."""
+    """find_similar works when given a resource ID, excluding its linking captures and their family."""
     with test_db.transaction() as conn:
         _setup_similar_corpus(conn)
 
     with test_db.connection() as conn:
         hits = find_similar(conn, "res_llm", limit=10)
         hit_ids = [h["object_id"] for h in hits]
+        # res_llm, cap_ai, and fin_attn are all in the source resource's family
         assert "res_llm" not in hit_ids
-        assert "cap_ai" in hit_ids
+        assert "cap_ai" not in hit_ids
+        assert "fin_attn" not in hit_ids
+        assert "res_neural" in hit_ids or "cap_neural" in hit_ids
 
 
 def test_similar_for_finding(test_db: Database):
-    """find_similar works when given a finding ID."""
+    """find_similar works when given a finding ID, excluding its parent resource and captures."""
     with test_db.transaction() as conn:
         _setup_similar_corpus(conn)
 
     with test_db.connection() as conn:
         hits = find_similar(conn, "fin_attn", limit=10)
         hit_ids = [h["object_id"] for h in hits]
+        # fin_attn, res_llm, and cap_ai are in the source finding's family
         assert "fin_attn" not in hit_ids
-        assert "res_llm" in hit_ids or "cap_ai" in hit_ids
+        assert "res_llm" not in hit_ids
+        assert "cap_ai" not in hit_ids
+        assert "fin_neural" in hit_ids or "res_neural" in hit_ids or "cap_neural" in hit_ids
 
 
 def test_similar_type_filtering(test_db: Database):
@@ -339,3 +385,130 @@ def test_mcp_similar_tool(test_db: Database):
     assert len(hits) >= 1
     assert "cap_ai" not in [h["object_id"] for h in hits]
     assert hits[0]["object_type"] in ("capture", "resource", "finding")
+
+
+def test_similar_group_by_capture(test_db: Database):
+    """find_similar with group_by='capture' collapses to one hit per capture with best score."""
+    with test_db.transaction() as conn:
+        _setup_similar_corpus(conn)
+
+    with test_db.connection() as conn:
+        hits = find_similar(conn, "cap_ai", limit=5, group_by="capture")
+        assert len(hits) >= 1
+
+        capture_ids = [h["capture_id"] for h in hits]
+        # Each hit must be a unique capture
+        assert len(capture_ids) == len(set(capture_ids))
+
+        # Source capture must not be returned
+        assert "cap_ai" not in capture_ids
+
+        # cap_neural should be the top match
+        assert "cap_neural" in capture_ids
+
+        # Verify grouped hit schema
+        for h in hits:
+            assert h["object_type"] == "capture"
+            assert "capture_id" in h
+            assert "object_id" in h
+            assert h["object_id"] == h["capture_id"]
+            assert "title" in h
+            assert "similarity" in h
+            assert "matched_object_type" in h
+            assert "matched_object_id" in h
+            assert "matched_title" in h
+            assert "matched_member" in h
+            assert h["matched_member"]["object_id"] == h["matched_object_id"]
+            assert h["matched_member"]["object_type"] == h["matched_object_type"]
+
+
+def test_similar_grouped_overfetching_meets_limit(test_db: Database):
+    """Grouped mode over-fetches candidates so limit is met after collapsing captures."""
+    with test_db.transaction() as conn:
+        _setup_similar_corpus(conn)
+        now_iso = "2026-01-01T12:00:00Z"
+        # Seed several extra captures to ensure limit >= 3 can be met
+        for i in range(1, 4):
+            cid = f"cap_extra_{i}"
+            rid = f"res_extra_{i}"
+            conn.execute(
+                """
+                INSERT INTO captures (id, origin_namespace, collection_channel, collector, acquisition_method, retrieved_at, raw_content, user_note, is_deleted, created_at, updated_at)
+                VALUES (?, 'web', 'browser', 'cli', 'manual', ?, 'Extra machine learning note.', 'Extra Note', 0, ?, ?);
+                """,
+                (cid, now_iso, now_iso, now_iso),
+            )
+            conn.execute(
+                """
+                INSERT INTO resources (id, identity_key, canonical_url, title, is_deleted, created_at, updated_at)
+                VALUES (?, ?, ?, 'Extra Title', 0, ?, ?);
+                """,
+                (rid, f"url:{rid}", f"https://example.com/{rid}", now_iso, now_iso),
+            )
+            conn.execute(
+                "INSERT INTO capture_resources (capture_id, resource_id, created_at) VALUES (?, ?, ?);",
+                (cid, rid, now_iso),
+            )
+            store_embedding(
+                conn, "capture", cid, f"Extra machine learning note number {i} on attention."
+            )
+            store_embedding(conn, "resource", rid, f"Extra resource text number {i} on attention.")
+
+    with test_db.connection() as conn:
+        # Request limit=3
+        hits = find_similar(conn, "cap_ai", limit=3, group_by="capture")
+        assert len(hits) == 3
+        # Unique capture IDs
+        cids = [h["capture_id"] for h in hits]
+        assert len(set(cids)) == 3
+
+
+def test_cli_similar_group_by_json_contract(test_db: Database, monkeypatch):
+    """CLI edward similar with --group-by capture --json produces valid JSON on stdout."""
+    monkeypatch.setenv("EDWARD_DB_PATH", str(test_db.db_path))
+
+    with test_db.transaction() as conn:
+        _setup_similar_corpus(conn)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["similar", "cap_ai", "--group-by", "capture", "--json"])
+    assert result.exit_code == 0
+    data = json.loads(result.stdout)
+    assert isinstance(data, list)
+    assert len(data) >= 1
+    hit = data[0]
+    assert "capture_id" in hit
+    assert "matched_object_type" in hit
+    assert "matched_object_id" in hit
+    assert "matched_title" in hit
+    assert "similarity" in hit
+
+
+def test_cli_similar_bad_group_by_exit_code_2(test_db: Database, monkeypatch):
+    """Invalid --group-by returns exit code 2."""
+    monkeypatch.setenv("EDWARD_DB_PATH", str(test_db.db_path))
+
+    with test_db.transaction() as conn:
+        _setup_similar_corpus(conn)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["similar", "cap_ai", "--group-by", "invalid_group", "--json"])
+    assert result.exit_code == 2
+
+
+def test_mcp_similar_group_by(test_db: Database):
+    """MCP server edward_similar tool supports group_by='capture'."""
+    with test_db.transaction() as conn:
+        _setup_similar_corpus(conn)
+
+    server = create_mcp_server(db=test_db)
+    tool_fn = server._tool_manager._tools.get("edward_similar")
+    assert tool_fn is not None
+
+    hits = tool_fn.fn(object_id="cap_ai", limit=5, group_by="capture")
+    assert isinstance(hits, list)
+    assert len(hits) >= 1
+    cids = [h["capture_id"] for h in hits]
+    assert len(cids) == len(set(cids))
+    assert "matched_object_type" in hits[0]
+    assert "matched_object_id" in hits[0]

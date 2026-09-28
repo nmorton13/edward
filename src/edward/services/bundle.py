@@ -864,6 +864,7 @@ def ingest_markdown_report(
         res_id,
         clean_text=clean_md,
         summary=clean_md[:300] + "..." if len(clean_md) > 300 else clean_md,
+        summary_source="bundle",
         extractor="markdown-report",
         extractor_version="1.0",
         title=report_title,

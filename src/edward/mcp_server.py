@@ -141,15 +141,19 @@ def create_mcp_server(
         limit: int = 20,
         type: str | None = None,
         exclude_project: str | None = None,
+        group_by: str | None = None,
     ) -> list[dict[str, Any]]:
         """Find items similar in meaning to an existing capture, resource, or finding.
 
         Uses the item's stored vector embedding without re-embedding.
         Returns a list of hits with object_type, object_id, title, similarity,
         and capture_id (for resources).
-        Excludes the item itself, soft-deleted records, and optionally items
+        Excludes the item itself and its family, soft-deleted records, and optionally items
         in a specified project.
+        When group_by='capture', collapses hits to one per capture scored by the best-matching member.
         """
+        if group_by and group_by not in ("capture",):
+            raise ValueError(f"Invalid group_by '{group_by}'. Allowed values: capture")
         database, _ = _get_services(db, blob_store)
         with database.connection() as conn:
             return find_similar(
@@ -158,6 +162,7 @@ def create_mcp_server(
                 limit=limit,
                 object_type=type,
                 exclude_project=exclude_project,
+                group_by=group_by,
             )
 
     @server.tool(name="edward_show")

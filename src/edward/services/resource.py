@@ -48,7 +48,7 @@ def get_cached_content(conn: sqlite3.Connection, resource_id: str) -> dict | Non
     """Return the latest cached extracted content for a resource if available."""
     row = conn.execute(
         """
-        SELECT id, content_hash, clean_text, summary, char_count, extractor, extractor_version, created_at
+        SELECT id, content_hash, clean_text, summary, summary_source, char_count, extractor, extractor_version, created_at
         FROM resource_contents
         WHERE resource_id = ?
         ORDER BY created_at DESC
@@ -194,6 +194,7 @@ def store_resource_content(
     title: str | None = None,
     capture_id: str | None = None,
     extraction_note: str | None = None,
+    summary_source: str | None = None,
 ) -> tuple[str, str]:
     """Store extracted clean text in resource_contents, update resource metadata, and reproject to FTS.
 
@@ -207,12 +208,22 @@ def store_resource_content(
     content_id = generate_id("rc")
     now_iso = datetime.datetime.now(datetime.UTC).isoformat()
 
+    has_summary = bool(summary and summary.strip())
+    eff_summary_source = None
+    if has_summary:
+        if summary_source:
+            eff_summary_source = summary_source
+        elif extractor == "markdown-report":
+            eff_summary_source = "bundle"
+        else:
+            eff_summary_source = "legacy"
+
     conn.execute(
         """
         INSERT INTO resource_contents (
-            id, resource_id, content_hash, clean_text, summary, char_count,
+            id, resource_id, content_hash, clean_text, summary, summary_source, char_count,
             extractor, extractor_version, extraction_note, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """,
         (
             content_id,
@@ -220,6 +231,7 @@ def store_resource_content(
             c_hash,
             text_clean,
             summary,
+            eff_summary_source,
             len(text_clean),
             extractor,
             extractor_version,

@@ -65,8 +65,8 @@ def test_pending_migration_still_applies_under_contention(tmp_path):
     migrations = _real_migrations_copy(tmp_path)
     db.run_migrations(migrations)
 
-    # A sixth migration exists but is not applied yet.
-    (migrations / "006_add_probe_table.sql").write_text(
+    # A next migration exists but is not applied yet.
+    (migrations / "007_add_probe_table.sql").write_text(
         "CREATE TABLE IF NOT EXISTS probe_table (id TEXT PRIMARY KEY);"
     )
 
@@ -81,11 +81,11 @@ def test_pending_migration_still_applies_under_contention(tmp_path):
         holder.close()
 
     # Once contention clears, the pending migration must apply.
-    assert db.run_migrations(migrations) == ["006_add_probe_table.sql"]
+    assert db.run_migrations(migrations) == ["007_add_probe_table.sql"]
 
     with db.connection() as conn:
         versions = {r["version"] for r in conn.execute("SELECT version FROM schema_migrations;")}
-        assert 6 in versions
+        assert 7 in versions
         assert conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='probe_table';"
         ).fetchone()

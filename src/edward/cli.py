@@ -523,12 +523,19 @@ def similar_command(
     exclude_project: str | None = typer.Option(
         None, "--exclude-project", help="Exclude items belonging to project (by slug or ID)"
     ),
+    group_by: str | None = typer.Option(None, "--group-by", help="Group hits by: capture"),
     json_mode: bool = typer.Option(False, "--json", help="Output machine-readable JSON on stdout"),
 ) -> None:
     """Find items similar in meaning to an existing capture, resource, or finding."""
     if type and type not in ("capture", "resource", "finding"):
         handle_error(
             f"Invalid type '{type}'. Allowed values: capture, resource, finding",
+            exit_code=2,
+            as_json=json_mode,
+        )
+    if group_by and group_by not in ("capture",):
+        handle_error(
+            f"Invalid group-by '{group_by}'. Allowed values: capture",
             exit_code=2,
             as_json=json_mode,
         )
@@ -547,6 +554,7 @@ def similar_command(
                 limit=limit,
                 object_type=type,
                 exclude_project=exclude_project,
+                group_by=group_by,
             )
     except ProjectNotFoundError as e:
         handle_error(str(e), exit_code=2, as_json=json_mode)
@@ -567,13 +575,22 @@ def similar_command(
         f"[bold]Similar items to[/bold] [cyan]{object_id}[/cyan] ({len(hits)} matches):\n"
     )
     for idx, hit in enumerate(hits, 1):
-        obj_type = hit["object_type"].upper()
         sim_pct = f"{hit['similarity'] * 100:.1f}%"
-        out_console.print(
-            f"{idx}. [{obj_type}] [cyan]{hit['object_id']}[/cyan] (similarity: {sim_pct}) - {hit['title']}"
-        )
-        if hit.get("capture_id") and hit["object_type"] == "resource":
-            out_console.print(f"   Linked capture: [dim]{hit['capture_id']}[/dim]")
+        if group_by == "capture":
+            out_console.print(
+                f"{idx}. [CAPTURE] [cyan]{hit['capture_id']}[/cyan] (similarity: {sim_pct}) - {hit['title']}"
+            )
+            m_type = hit.get("matched_object_type", "").upper()
+            m_id = hit.get("matched_object_id", "")
+            m_title = hit.get("matched_title", "")
+            out_console.print(f"   Best match: [{m_type}] [cyan]{m_id}[/cyan] - {m_title}")
+        else:
+            obj_type = hit["object_type"].upper()
+            out_console.print(
+                f"{idx}. [{obj_type}] [cyan]{hit['object_id']}[/cyan] (similarity: {sim_pct}) - {hit['title']}"
+            )
+            if hit.get("capture_id") and hit["object_type"] == "resource":
+                out_console.print(f"   Linked capture: [dim]{hit['capture_id']}[/dim]")
 
 
 @app.command("annotate")

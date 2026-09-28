@@ -679,6 +679,66 @@ def search_vector(
     )
 
 
+def _get_capture_title(conn: sqlite3.Connection, cap_id: str) -> str:
+    c_info = conn.execute(
+        """
+        SELECT c.user_note, c.raw_content, r.title AS res_title
+        FROM captures c
+        LEFT JOIN capture_resources cr ON cr.capture_id = c.id
+        LEFT JOIN resources r ON r.id = cr.resource_id AND r.is_deleted = 0
+        WHERE c.id = ?
+        ORDER BY cr.created_at ASC LIMIT 1;
+        """,
+        (cap_id,),
+    ).fetchone()
+    return (
+        (c_info["user_note"] if c_info and c_info["user_note"] else None)
+        or (c_info["res_title"] if c_info and c_info["res_title"] else None)
+        or (c_info["raw_content"][:80].strip() if c_info and c_info["raw_content"] else None)
+        or "Untitled Capture"
+    )
+
+
+def _get_item_title_and_capture_id(
+    conn: sqlite3.Connection, h_type: str, h_id: str
+) -> tuple[str, str | None]:
+    if h_type == "resource":
+        r_info = conn.execute(
+            "SELECT title, canonical_url FROM resources WHERE id = ?;", (h_id,)
+        ).fetchone()
+        title = (
+            (r_info["title"] if r_info else None)
+            or (r_info["canonical_url"] if r_info else None)
+            or "Untitled Resource"
+        )
+        cr_row = conn.execute(
+            "SELECT capture_id FROM capture_resources WHERE resource_id = ? ORDER BY created_at ASC LIMIT 1;",
+            (h_id,),
+        ).fetchone()
+        capture_id = cr_row["capture_id"] if cr_row else None
+        return title, capture_id
+
+    elif h_type == "capture":
+        title = _get_capture_title(conn, h_id)
+        return title, h_id
+
+    elif h_type == "finding":
+        f_info = conn.execute(
+            "SELECT statement, resource_id FROM findings WHERE id = ?;", (h_id,)
+        ).fetchone()
+        title = (f_info["statement"] if f_info else None) or "Untitled Finding"
+        capture_id = None
+        if f_info and f_info["resource_id"]:
+            cr_row = conn.execute(
+                "SELECT capture_id FROM capture_resources WHERE resource_id = ? ORDER BY created_at ASC LIMIT 1;",
+                (f_info["resource_id"],),
+            ).fetchone()
+            capture_id = cr_row["capture_id"] if cr_row else None
+        return title, capture_id
+
+    return "", None
+
+
 def find_similar(
     conn: sqlite3.Connection,
     object_id: str,
@@ -686,17 +746,23 @@ def find_similar(
     model: str | None = None,
     object_type: str | None = None,
     exclude_project: str | None = None,
+    group_by: str | None = None,
 ) -> list[dict[str, Any]]:
     """Find items similar in meaning to an existing capture, resource, or finding.
 
     Reuses the stored vector embedding of the source item.
-    Excludes the item itself, soft-deleted rows, and optionally items in a specified project.
-    Returns list of dicts with: 'object_type', 'object_id', 'title', 'similarity', 'capture_id'.
+    Always excludes the source item's own family (linked resources/findings/captures),
+    soft-deleted rows, and optionally items in a specified project.
+    When group_by='capture', collapses hits to one per capture scored by the best-matching
+    member, reporting which member matched.
     """
     if object_type and object_type not in ("capture", "resource", "finding"):
         raise ValueError(
             f"Invalid type '{object_type}'. Allowed values: capture, resource, finding"
         )
+
+    if group_by and group_by not in ("capture",):
+        raise ValueError(f"Invalid group_by '{group_by}'. Allowed values: capture")
 
     if limit <= 0:
         raise ValueError("Limit must be greater than 0")
@@ -740,8 +806,15 @@ def find_similar(
             )
         raise ItemNotEmbeddedError(f"Item '{object_id}' has no embedding")
 
-    # 3. Determine exclusions
+    # 3. Determine exclusions (always exclude source family + optional project objects)
     exclude_ids: set[str] = {object_id}
+
+    if source_type == "finding":
+        f_row = conn.execute(
+            "SELECT resource_id FROM findings WHERE id = ?;", (object_id,)
+        ).fetchone()
+        if f_row and f_row["resource_id"]:
+            exclude_ids.add(f_row["resource_id"])
 
     if exclude_project:
         proj = conn.execute(
@@ -763,100 +836,141 @@ def find_similar(
         for r in po_rows:
             exclude_ids.add(r["object_id"])
 
-        if exclude_ids:
-            ph = ",".join("?" * len(exclude_ids))
-            cr_res = conn.execute(
-                f"SELECT resource_id FROM capture_resources WHERE capture_id IN ({ph});",
-                list(exclude_ids),
-            ).fetchall()
-            for r in cr_res:
-                exclude_ids.add(r["resource_id"])
+    def _query_ids(sql_template: str, ids: set[str]) -> list[str]:
+        results: list[str] = []
+        id_list = list(ids)
+        chunk_size = 400
+        for i in range(0, len(id_list), chunk_size):
+            chunk = id_list[i : i + chunk_size]
+            ph = ",".join("?" * len(chunk))
+            rows = conn.execute(sql_template.format(ph=ph), chunk).fetchall()
+            for r in rows:
+                results.append(r[0])
+        return results
 
-            cr_caps = conn.execute(
-                f"SELECT capture_id FROM capture_resources WHERE resource_id IN ({ph});",
-                list(exclude_ids),
-            ).fetchall()
-            for r in cr_caps:
-                exclude_ids.add(r["capture_id"])
+    if exclude_ids:
+        # capture -> linked resources
+        cr_res = _query_ids(
+            "SELECT resource_id FROM capture_resources WHERE capture_id IN ({ph});",
+            exclude_ids,
+        )
+        exclude_ids.update(cr_res)
 
-            fin_rows = conn.execute(
-                f"SELECT id FROM findings WHERE resource_id IN ({ph});",
-                list(exclude_ids),
-            ).fetchall()
-            for r in fin_rows:
-                exclude_ids.add(r["id"])
+        # resource -> linking captures
+        cr_caps = _query_ids(
+            "SELECT capture_id FROM capture_resources WHERE resource_id IN ({ph});",
+            exclude_ids,
+        )
+        exclude_ids.update(cr_caps)
 
-    # 4. Search vector by vector
-    raw_hits = search_vector_by_vector(
-        conn=conn,
-        query_vec=emb_row["embedding_blob"],
-        limit=limit,
-        model=target_model,
-        object_type=object_type,
-        allowed_types=("capture", "resource", "finding"),
-        exclude_object_ids=exclude_ids,
-        filter_active_only=True,
-    )
+        # linking captures -> other resources
+        cr_res2 = _query_ids(
+            "SELECT resource_id FROM capture_resources WHERE capture_id IN ({ph});",
+            exclude_ids,
+        )
+        exclude_ids.update(cr_res2)
 
-    # 5. Enrich hits with title and capture_id
+        # resources -> findings
+        fin_rows = _query_ids(
+            "SELECT id FROM findings WHERE resource_id IN ({ph});",
+            exclude_ids,
+        )
+        exclude_ids.update(fin_rows)
+
+    # 4. Search vector candidates (over-fetching so grouping and exclusions don't fall short)
+    if group_by == "capture":
+        candidate_limit = max(limit * 5, 50)
+        while True:
+            raw_hits = search_vector_by_vector(
+                conn=conn,
+                query_vec=emb_row["embedding_blob"],
+                limit=candidate_limit,
+                model=target_model,
+                object_type=object_type,
+                allowed_types=("capture", "resource", "finding"),
+                exclude_object_ids=exclude_ids,
+                filter_active_only=True,
+            )
+            distinct_caps: set[str] = set()
+            for h in raw_hits:
+                if h["object_id"] in exclude_ids:
+                    continue
+                _, cap_id = _get_item_title_and_capture_id(conn, h["object_type"], h["object_id"])
+                if cap_id and cap_id not in exclude_ids:
+                    distinct_caps.add(cap_id)
+            if len(distinct_caps) >= limit or len(raw_hits) < candidate_limit:
+                break
+            candidate_limit *= 3
+
+        grouped_hits: list[dict[str, Any]] = []
+        seen_captures: set[str] = set()
+
+        for hit in raw_hits:
+            h_type = hit["object_type"]
+            h_id = hit["object_id"]
+            if h_id in exclude_ids:
+                continue
+
+            sim = round(float(hit["similarity"]), 4)
+            member_title, cap_id = _get_item_title_and_capture_id(conn, h_type, h_id)
+
+            if not cap_id or cap_id in exclude_ids:
+                continue
+
+            if cap_id in seen_captures:
+                continue
+            seen_captures.add(cap_id)
+
+            cap_title = _get_capture_title(conn, cap_id)
+            grouped_hits.append(
+                {
+                    "object_type": "capture",
+                    "object_id": cap_id,
+                    "capture_id": cap_id,
+                    "title": cap_title,
+                    "similarity": sim,
+                    "matched_object_type": h_type,
+                    "matched_object_id": h_id,
+                    "matched_title": member_title,
+                    "matched_member": {
+                        "object_type": h_type,
+                        "object_id": h_id,
+                        "title": member_title,
+                        "similarity": sim,
+                    },
+                }
+            )
+            if len(grouped_hits) == limit:
+                break
+
+        return grouped_hits
+
+    # Ungrouped mode
+    candidate_limit = max(limit * 2, limit)
+    while True:
+        raw_hits = search_vector_by_vector(
+            conn=conn,
+            query_vec=emb_row["embedding_blob"],
+            limit=candidate_limit,
+            model=target_model,
+            object_type=object_type,
+            allowed_types=("capture", "resource", "finding"),
+            exclude_object_ids=exclude_ids,
+            filter_active_only=True,
+        )
+        valid_count = sum(1 for h in raw_hits if h["object_id"] not in exclude_ids)
+        if valid_count >= limit or len(raw_hits) < candidate_limit:
+            break
+        candidate_limit *= 2
+
     enriched: list[dict[str, Any]] = []
     for hit in raw_hits:
         h_type = hit["object_type"]
         h_id = hit["object_id"]
+        if h_id in exclude_ids:
+            continue
         sim = round(float(hit["similarity"]), 4)
-
-        title = ""
-        capture_id: str | None = None
-
-        if h_type == "resource":
-            r_info = conn.execute(
-                "SELECT title, canonical_url FROM resources WHERE id = ?;", (h_id,)
-            ).fetchone()
-            title = (
-                (r_info["title"] if r_info else None)
-                or (r_info["canonical_url"] if r_info else None)
-                or "Untitled Resource"
-            )
-
-            cr_row = conn.execute(
-                "SELECT capture_id FROM capture_resources WHERE resource_id = ? ORDER BY created_at ASC LIMIT 1;",
-                (h_id,),
-            ).fetchone()
-            capture_id = cr_row["capture_id"] if cr_row else None
-
-        elif h_type == "capture":
-            c_info = conn.execute(
-                """
-                SELECT c.user_note, c.raw_content, r.title AS res_title
-                FROM captures c
-                LEFT JOIN capture_resources cr ON cr.capture_id = c.id
-                LEFT JOIN resources r ON r.id = cr.resource_id AND r.is_deleted = 0
-                WHERE c.id = ?
-                ORDER BY cr.created_at ASC LIMIT 1;
-                """,
-                (h_id,),
-            ).fetchone()
-            title = (
-                (c_info["user_note"] if c_info and c_info["user_note"] else None)
-                or (c_info["res_title"] if c_info and c_info["res_title"] else None)
-                or (
-                    c_info["raw_content"][:80].strip() if c_info and c_info["raw_content"] else None
-                )
-                or "Untitled Capture"
-            )
-            capture_id = h_id
-
-        elif h_type == "finding":
-            f_info = conn.execute(
-                "SELECT statement, resource_id FROM findings WHERE id = ?;", (h_id,)
-            ).fetchone()
-            title = (f_info["statement"] if f_info else None) or "Untitled Finding"
-            if f_info and f_info["resource_id"]:
-                cr_row = conn.execute(
-                    "SELECT capture_id FROM capture_resources WHERE resource_id = ? ORDER BY created_at ASC LIMIT 1;",
-                    (f_info["resource_id"],),
-                ).fetchone()
-                capture_id = cr_row["capture_id"] if cr_row else None
+        title, capture_id = _get_item_title_and_capture_id(conn, h_type, h_id)
 
         enriched.append(
             {
@@ -867,6 +981,8 @@ def find_similar(
                 "capture_id": capture_id,
             }
         )
+        if len(enriched) == limit:
+            break
 
     return enriched
 

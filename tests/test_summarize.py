@@ -494,3 +494,224 @@ def test_cli_process_summarize_scoping(test_db_and_blobs, monkeypatch):
         ).fetchone()
         assert r1["summary"] == "Scoped summary."
         assert r2["summary"] is None  # Not processed because of scoping!
+
+
+# --- 9. Legacy Summaries Replaced, Human Preserved, and Migration Provenance ---
+
+
+def test_human_summaries_are_preserved(test_db_and_blobs):
+    """Human summaries must never be replaced by automated summarizer."""
+    db, blob_store = test_db_and_blobs
+    now_iso = datetime.datetime.now(datetime.UTC).isoformat()
+
+    existing_summary = "Human-authored synthesis of the paper."
+    with db.transaction() as conn:
+        conn.execute(
+            """
+            INSERT INTO resources (id, identity_key, canonical_url, title, review_state, is_deleted, created_at, updated_at)
+            VALUES ('res_human_1', 'url:example.com/human', 'https://example.com/human', 'Human Paper', 'unreviewed', 0, ?, ?);
+            """,
+            (now_iso, now_iso),
+        )
+        store_resource_content(
+            conn,
+            "res_human_1",
+            clean_text="Detailed paper text about neural architectures.",
+            summary=existing_summary,
+            summary_source="human",
+            extractor="human",
+        )
+
+    fake_client = FakeSummarizerClient("Model summary that must never overwrite human summary.")
+
+    with db.transaction() as conn:
+        queued = enqueue_missing_summarize_jobs(conn)
+        assert queued == 0
+
+    res = process_pending_jobs(db, blob_store, stage="summarize", llm_client=fake_client)
+    assert res["completed"] == 0
+    assert fake_client.call_count == 0
+
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT summary, summary_source FROM resource_contents WHERE resource_id = 'res_human_1' ORDER BY created_at DESC LIMIT 1;"
+        ).fetchone()
+        assert row["summary"] == existing_summary
+        assert row["summary_source"] == "human"
+
+
+def test_legacy_summaries_get_queued_and_replaced(test_db_and_blobs):
+    """Low-quality legacy summaries (page lead text) are queued and replaced by model summaries."""
+    db, blob_store = test_db_and_blobs
+    now_iso = datetime.datetime.now(datetime.UTC).isoformat()
+
+    legacy_summary = "West Virginia State Treasurer's Office &ndash; About Us"
+    with db.transaction() as conn:
+        conn.execute(
+            """
+            INSERT INTO resources (id, identity_key, canonical_url, title, review_state, is_deleted, created_at, updated_at)
+            VALUES ('res_legacy_1', 'url:example.com/wv', 'https://example.com/wv', 'WV Office', 'unreviewed', 0, ?, ?);
+            """,
+            (now_iso, now_iso),
+        )
+        store_resource_content(
+            conn,
+            "res_legacy_1",
+            clean_text="The West Virginia State Treasurer Office manages the state's financial resources and investments.",
+            summary=legacy_summary,
+            summary_source="legacy",
+            extractor="summarize",
+        )
+
+    fake_client = FakeSummarizerClient("New concise model summary of the West Virginia Treasury.")
+
+    # 1. Enqueue must queue the legacy row like a missing summary
+    with db.transaction() as conn:
+        queued = enqueue_missing_summarize_jobs(conn)
+        assert queued == 1
+
+    # 2. Process stage must call LLM and replace the legacy summary with model summary
+    res = process_pending_jobs(db, blob_store, stage="summarize", llm_client=fake_client)
+    assert res["completed"] == 1
+    assert fake_client.call_count == 1
+
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT summary, summary_source FROM resource_contents WHERE resource_id = 'res_legacy_1' ORDER BY created_at DESC LIMIT 1;"
+        ).fetchone()
+        assert row["summary"] == "New concise model summary of the West Virginia Treasury."
+        assert row["summary_source"] == "model"
+
+    # 3. Rerun is still a no-op
+    with db.transaction() as conn:
+        queued_again = enqueue_missing_summarize_jobs(conn)
+        assert queued_again == 0
+
+    res_rerun = process_pending_jobs(db, blob_store, stage="summarize", llm_client=fake_client)
+    assert res_rerun["completed"] == 0
+    assert fake_client.call_count == 1
+
+
+def test_migration_006_backfill_assigns_correct_sources(tmp_path):
+    """Migration 006 backfills summary_source correctly across legacy, bundle, model, and human."""
+    db_file = tmp_path / "test_migration_006.sqlite3"
+    db = Database(db_file)
+    now_iso = "2026-09-27T12:00:00Z"
+
+    # 1. Apply migrations 1 through 5
+    import shutil
+    from pathlib import Path
+
+    migrations_dir = Path(__file__).parent.parent / "src" / "edward" / "migrations"
+    migs_1_to_5 = tmp_path / "migs_1_to_5"
+    migs_1_to_5.mkdir()
+    for m_file in sorted(migrations_dir.glob("*.sql")):
+        if m_file.name.startswith("006"):
+            continue
+        shutil.copy(m_file, migs_1_to_5 / m_file.name)
+    db.run_migrations(migrations_dir=migs_1_to_5)
+
+    # 2. Seed data before migration 006
+    with db.transaction() as conn:
+        # Bundle resource
+        conn.execute(
+            "INSERT INTO resources (id, identity_key, canonical_url, title, is_deleted, created_at, updated_at) VALUES ('res_bnd', 'url:bnd', 'https://example.com/bnd', 'Bnd', 0, ?, ?);",
+            (now_iso, now_iso),
+        )
+        conn.execute(
+            """
+            INSERT INTO resource_contents (id, resource_id, content_hash, clean_text, summary, char_count, extractor, extractor_version, created_at)
+            VALUES ('rc_bnd', 'res_bnd', 'hash_bnd', 'Bundle clean text', 'Bundle summary text', 17, 'markdown-report', '1.0', ?);
+            """,
+            (now_iso,),
+        )
+
+        # Legacy summarize resource (with completed job)
+        conn.execute(
+            "INSERT INTO resources (id, identity_key, canonical_url, title, is_deleted, created_at, updated_at) VALUES ('res_leg', 'url:leg', 'https://example.com/leg', 'Leg', 0, ?, ?);",
+            (now_iso, now_iso),
+        )
+        conn.execute(
+            """
+            INSERT INTO resource_contents (id, resource_id, content_hash, clean_text, summary, char_count, extractor, extractor_version, created_at)
+            VALUES ('rc_leg', 'res_leg', 'hash_leg', 'Legacy page text', 'West Virginia State Treasurer', 16, 'summarize', '0.21.x', ?);
+            """,
+            (now_iso,),
+        )
+        conn.execute(
+            """
+            INSERT INTO processing_jobs (id, job_key, resource_id, stage, status, input_hash, attempts, available_at, completed_at, created_at, updated_at)
+            VALUES ('job_leg', 'summarize:res_leg', 'res_leg', 'summarize', 'completed', 'hash_leg', 0, ?, ?, ?, ?);
+            """,
+            (now_iso, now_iso, now_iso, now_iso),
+        )
+
+        # Model resource (previously completed model job with started_at set)
+        conn.execute(
+            "INSERT INTO resources (id, identity_key, canonical_url, title, is_deleted, created_at, updated_at) VALUES ('res_mod', 'url:mod', 'https://example.com/mod', 'Mod', 0, ?, ?);",
+            (now_iso, now_iso),
+        )
+        conn.execute(
+            """
+            INSERT INTO resource_contents (id, resource_id, content_hash, clean_text, summary, char_count, extractor, extractor_version, created_at)
+            VALUES ('rc_mod', 'res_mod', 'hash_mod', 'Model page text', 'Model generated summary', 15, 'xurl', '1.0', ?);
+            """,
+            (now_iso,),
+        )
+        conn.execute(
+            """
+            INSERT INTO processing_jobs (id, job_key, resource_id, stage, status, input_hash, attempts, available_at, started_at, completed_at, created_at, updated_at)
+            VALUES ('job_mod', 'summarize:res_mod', 'res_mod', 'summarize', 'completed', 'hash_mod', 0, ?, ?, ?, ?, ?);
+            """,
+            (now_iso, now_iso, now_iso, now_iso, now_iso),
+        )
+
+        # Human resource
+        conn.execute(
+            "INSERT INTO resources (id, identity_key, canonical_url, title, is_deleted, created_at, updated_at) VALUES ('res_hum', 'url:hum', 'https://example.com/hum', 'Hum', 0, ?, ?);",
+            (now_iso, now_iso),
+        )
+        conn.execute(
+            """
+            INSERT INTO resource_contents (id, resource_id, content_hash, clean_text, summary, char_count, extractor, extractor_version, created_at)
+            VALUES ('rc_hum', 'res_hum', 'hash_hum', 'Human page text', 'Human written summary', 15, 'human', '1.0', ?);
+            """,
+            (now_iso,),
+        )
+
+        # Resource with no summary
+        conn.execute(
+            "INSERT INTO resources (id, identity_key, canonical_url, title, is_deleted, created_at, updated_at) VALUES ('res_none', 'url:none', 'https://example.com/none', 'None', 0, ?, ?);",
+            (now_iso, now_iso),
+        )
+        conn.execute(
+            """
+            INSERT INTO resource_contents (id, resource_id, content_hash, clean_text, summary, char_count, extractor, extractor_version, created_at)
+            VALUES ('rc_none', 'res_none', 'hash_none', 'No summary page text', NULL, 18, 'local-fallback', '1.0', ?);
+            """,
+            (now_iso,),
+        )
+
+    # 3. Run migrations (applies 006_summary_source.sql)
+    applied = db.run_migrations()
+    assert "006_summary_source.sql" in applied
+
+    # 4. Verify summary_source assignments and job status reset
+    with db.connection() as conn:
+        sources = {
+            r["id"]: r["summary_source"]
+            for r in conn.execute("SELECT id, summary_source FROM resource_contents").fetchall()
+        }
+        assert sources["rc_bnd"] == "bundle"
+        assert sources["rc_leg"] == "legacy"
+        assert sources["rc_mod"] == "model"
+        assert sources["rc_hum"] == "human"
+        assert sources["rc_none"] is None
+
+        # Verify that legacy processing job was reset to pending
+        leg_job = conn.execute("SELECT status FROM processing_jobs WHERE id = 'job_leg'").fetchone()
+        assert leg_job["status"] == "pending"
+
+        # Verify that model processing job remained completed
+        mod_job = conn.execute("SELECT status FROM processing_jobs WHERE id = 'job_mod'").fetchone()
+        assert mod_job["status"] == "completed"
