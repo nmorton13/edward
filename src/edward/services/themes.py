@@ -697,6 +697,18 @@ def recent_digest(
                 if cid in index:
                     membership[cid] = themes[int((matrix[index[cid]] @ centroids.T).argmax())]["id"]
 
+    suggested_for: dict[str, list[str]] = {}
+    for r in conn.execute(
+        """
+        SELECT pm.capture_id, p.title FROM project_matches pm
+        JOIN projects p ON p.id = pm.project_id AND p.is_deleted = 0
+        JOIN project_objects po ON po.project_id = pm.project_id AND po.object_id = pm.object_id
+        WHERE pm.outcome = 'suggested' AND po.membership_status = 'candidate'
+        ORDER BY p.title;
+        """
+    ):
+        suggested_for.setdefault(r["capture_id"], []).append(r["title"])
+
     days: dict[datetime.date, list[dict[str, Any]]] = {}
     theme_counts: Counter[str | None] = Counter()
     for cid, ts, basis in in_window:
@@ -710,6 +722,7 @@ def recent_digest(
                 "theme_name": names.get(theme_id, "Unsorted") if theme_id else "Unsorted",
                 "date": ts.isoformat(),
                 "date_basis": basis,
+                "suggested_for": suggested_for.get(cid, []),
             }
         )
 

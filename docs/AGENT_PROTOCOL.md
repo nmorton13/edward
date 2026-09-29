@@ -252,7 +252,12 @@ Create a workspace, attach canonical corpus objects, and inspect bounded project
 edward project create --title "Local AI" --brief "How does local AI change creative work?" --json
 edward project add <PROJECT_ID> <OBJECT_ID> --relationship supporting --status accepted --json
 edward project context <PROJECT_ID> --refresh-candidates --json
+edward project suggest <PROJECT_ID> [--full] [--limit 40] [--no-judge] --json
 ```
+
+`project suggest` (and `--refresh-candidates`, which runs a full pass) ranks captures by embedding similarity to the brief blended with accepted evidence, then asks the configured Jev judge whether each top candidate bears on the brief. Output: `{"judge": bool, "projects": [{"project_id", "title", "mode": "full"|"new", "checked", "judged", "suggested": [{"capture_id", "object_id", "title", "similarity", "relevance"}], "cost", "deferred", "error"}]}`. `relevance` is `null` when an item was not judged (private content, or no judge configured). Items left `deferred` after a provider error are retried on the next pass. Human membership decisions are never changed; rejected items are never re-suggested.
+
+`edward process` checks newly embedded captures against every active project after running jobs and reports them under `project_matches` (same shape). `--no-project-match` disables this. Libraries without embeddings fall back to keyword retrieval for `--refresh-candidates`.
 
 Agents can return a structured outline through a JSON file:
 
@@ -334,6 +339,8 @@ Edward exposes a native **Model Context Protocol (MCP)** server via `edward mcp`
   - Parameters: `query: str`, `limit: int = 20`, `topic: str | None`, `form: str | None`, `intent: str | None`, `project: str | None`
 - **`edward_similar`**: Find items similar in meaning to an existing capture, resource, or finding using its stored vector embedding.
   - Parameters: `object_id: str`, `limit: int = 20`, `type: str | None`, `exclude_project: str | None`
+- **`edward_project_suggest`**: Suggest candidate evidence for a project by meaning, judged against its brief.
+  - Parameters: `project_id: str`, `limit: int = 40`, `full: bool = False`, `judge: bool = True`
 - **`edward_themes`**: Named groups of related captures with counts and example titles.
   - Parameters: `examples: int = 3`
 - **`edward_recent`**: Recent saves by day, summarised by theme.

@@ -223,6 +223,22 @@ uv run edward project outline <PROJECT_ID> --propose --input outline.json --json
 uv run edward project outline <PROJECT_ID> --accept
 ```
 
+### Finding Evidence You Already Saved (`project suggest`)
+
+Edward suggests candidate evidence by **meaning**, then checks each candidate against the project's actual question:
+
+```bash
+uv run edward project suggest <PROJECT_ID>          # first run checks the whole library
+uv run edward project suggest <PROJECT_ID> --full   # re-check everything (e.g. after accepting evidence)
+```
+
+1. **Find:** every capture is ranked by embedding similarity to the project brief, blended with the evidence you have already accepted once there are at least three items.
+2. **Judge:** the top candidates go to the configured Jev classifier with one question, "is this relevant evidence for *your brief*?" A page about data-center jobs is near an essay on electricity rates but not relevant to it, and is left out.
+
+Suggestions are added as `candidate` evidence with a note explaining why. Your accepted and rejected decisions are never changed, and rejected items never come back. Only public content is sent to the judge; private captures are ranked locally and suggested only when they are among the closest matches. Without a configured judge, only the closest matches are suggested.
+
+**New saves are checked automatically.** After `edward process`, each newly embedded capture is checked once against every active project, and relevant ones become candidates. `edward process` lists them, and `edward recent` marks them with "→ suggested for …". Pass `--no-project-match` to skip this. Changing a project's brief makes the whole library eligible again.
+
 ### Outline Invariants & Evidence Mapping
 
 Outlines carry explicit relationships for each cited claim: `supporting`, `counterevidence`, or `qualification`.

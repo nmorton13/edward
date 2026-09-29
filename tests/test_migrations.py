@@ -55,6 +55,7 @@ def test_migration_restores_missing_resource_identity_key(tmp_path: Path):
         "005_extraction_note.sql",
         "006_summary_source.sql",
         "007_themes.sql",
+        "008_project_matches.sql",
     ]
     with db.connection() as conn:
         keys = {

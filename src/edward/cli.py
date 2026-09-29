@@ -1002,6 +1002,11 @@ def process_command(
         "--reconcile",
         help="Mark pending jobs whose targets are already completed as completed",
     ),
+    no_project_match: bool = typer.Option(
+        False,
+        "--no-project-match",
+        help="Skip checking newly embedded captures against active projects",
+    ),
     json_mode: bool = typer.Option(False, "--json", help="Output machine-readable JSON on stdout"),
 ) -> None:
     db, blob_store = get_services()
@@ -1056,6 +1061,9 @@ def process_command(
         stage=stage,
     )
 
+    if not no_project_match and stage in (None, "embed"):
+        result["project_matches"] = _match_new_captures(db)
+
     if json_mode:
         output_json_payload(result)
     else:
@@ -1070,6 +1078,36 @@ def process_command(
             err_console.print(
                 "[yellow]Stopped early: the model provider is rate limiting requests. "
                 "The job was re-queued without using a retry; run again later.[/yellow]"
+            )
+        _print_project_matches(result.get("project_matches"))
+
+
+def _match_new_captures(db: Database) -> dict[str, Any]:
+    """Check captures not yet seen by each active project. Never fails the surrounding command."""
+    from edward.services.project_match import match_projects
+
+    try:
+        return match_projects(db)
+    except Exception as e:
+        err_console.print(f"[yellow]Project matching skipped: {e}[/yellow]")
+        return {"projects": [], "error": str(e)}
+
+
+def _print_project_matches(matches: dict[str, Any] | None) -> None:
+    if not matches:
+        return
+    for p in matches.get("projects", []):
+        if p["suggested"]:
+            out_console.print(
+                f"[bold green]Suggested {len(p['suggested'])} for[/bold green] {p['title']}:"
+            )
+            for item in p["suggested"]:
+                score = f" ({item['relevance']:.2f})" if item["relevance"] is not None else ""
+                out_console.print(f"  • {item['title']}{score}")
+        if p.get("error"):
+            err_console.print(
+                f"[yellow]{p['title']}: judging stopped ({p['error']}); "
+                f"{p['deferred']} left for the next run.[/yellow]"
             )
 
 
@@ -1351,6 +1389,8 @@ def recent_command(
         for item in day["items"]:
             posted = " [dim](posted)[/dim]" if item["date_basis"] == "posted" else ""
             out_console.print(f"  • {item['title']} [dim]— {item['theme_name']}[/dim]{posted}")
+            for title in item["suggested_for"]:
+                out_console.print(f"      [green]→ suggested for {title}[/green]")
 
 
 @app.command("status")
@@ -2246,6 +2286,46 @@ def project_note_command(
     out_console.print(f"[bold green]Added project {kind}[/bold green] ({result['id']})")
 
 
+@project_app.command("suggest")
+def project_suggest_command(
+    project_id: str = typer.Argument(..., help="Project ID"),
+    limit: int = typer.Option(
+        40, "--limit", "-l", min=1, max=200, help="Candidates to judge on a full pass"
+    ),
+    full: bool = typer.Option(
+        False, "--full", help="Re-check the whole library, not just captures not yet checked"
+    ),
+    no_judge: bool = typer.Option(
+        False, "--no-judge", help="Rank by meaning only; never call the hosted judge"
+    ),
+    json_mode: bool = typer.Option(False, "--json", help="Output machine-readable JSON"),
+) -> None:
+    """Suggest candidate evidence by meaning, judged against the project's question."""
+    from edward.services.project_match import match_projects
+
+    try:
+        db, _ = get_services()
+        result = match_projects(db, [project_id], full=full, limit=limit, use_judge=not no_judge)
+    except (typer.Exit, SystemExit):
+        raise
+    except ValueError as e:
+        handle_error(str(e), exit_code=1, as_json=json_mode)
+    except Exception as e:
+        handle_error(f"Project suggest failed: {e}", exit_code=3, as_json=json_mode)
+    if json_mode:
+        output_json_payload(result)
+    if not result["projects"]:
+        out_console.print("Nothing new to check (or no embeddings in this library).")
+        return
+    for p in result["projects"]:
+        out_console.print(
+            f"[bold cyan]{p['title']}[/bold cyan]: checked {p['checked']}, judged {p['judged']}, "
+            f"suggested {len(p['suggested'])}"
+            + ("" if result["judge"] else " [dim](no judge configured: closest matches only)[/dim]")
+        )
+    _print_project_matches(result)
+
+
 @project_app.command("context")
 def project_context_command(
     project_id: str = typer.Argument(..., help="Project ID"),
@@ -2260,8 +2340,13 @@ def project_context_command(
     try:
         db, _ = get_services()
         if refresh_candidates:
-            with db.transaction() as conn:
-                suggest_project_evidence(conn, project_id, limit=limit, persist=True)
+            from edward.services.project_match import match_projects
+
+            matched = match_projects(db, [project_id], full=True, limit=limit)
+            if not matched["projects"]:
+                # No embeddings in this library: fall back to keyword retrieval.
+                with db.transaction() as conn:
+                    suggest_project_evidence(conn, project_id, limit=limit, persist=True)
         with db.connection() as conn:
             result = get_project_context(conn, project_id, include_rejected=include_rejected)
     except (typer.Exit, SystemExit):

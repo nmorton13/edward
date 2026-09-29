@@ -788,12 +788,39 @@ def create_mcp_server(
 
     @server.tool(name="edward_process")
     def edward_process(limit: int = 50) -> dict[str, Any]:
-        """Execute pending background extraction, classification, and local embedding jobs."""
+        """Execute pending background extraction, classification, and local embedding jobs.
+
+        Afterwards, newly embedded captures are checked against active projects; relevant ones
+        are added as candidate evidence and listed under `project_matches`.
+        """
+        from edward.services.project_match import match_projects
+
         database, blobs = _get_services(db, blob_store)
         try:
-            return process_pending_jobs(database, blobs, limit=limit)
+            result = process_pending_jobs(database, blobs, limit=limit)
         except Exception as e:
             return {"error": str(e)}
+        try:
+            result["project_matches"] = match_projects(database)
+        except Exception as e:
+            result["project_matches"] = {"projects": [], "error": str(e)}
+        return result
+
+    @server.tool(name="edward_project_suggest")
+    def edward_project_suggest(
+        project_id: str, limit: int = 40, full: bool = False, judge: bool = True
+    ) -> dict[str, Any]:
+        """Suggest candidate evidence for a project by meaning, judged against its question.
+
+        Ranks the library by similarity to the project brief (blended with accepted evidence),
+        then asks the configured Jev judge whether each top candidate bears on the project's
+        question. Relevant items are added as `candidate` evidence; human decisions are never
+        changed and rejected items never return. Only public content is sent to the judge.
+        """
+        from edward.services.project_match import match_projects
+
+        database, _ = _get_services(db, blob_store)
+        return match_projects(database, [project_id], full=full, limit=limit, use_judge=judge)
 
     @server.tool(name="edward_doctor")
     def edward_doctor() -> dict[str, Any]:
