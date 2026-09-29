@@ -73,6 +73,8 @@ project_app = typer.Typer(help="Manage active research and writing workspaces.")
 app.add_typer(project_app, name="project")
 sync_app = typer.Typer(help="Read-only imports from local source archives and accounts.")
 app.add_typer(sync_app, name="sync")
+themes_app = typer.Typer(help="Named groups of related captures.", invoke_without_command=True)
+app.add_typer(themes_app, name="themes")
 
 err_console = Console(stderr=True)
 out_console = Console()
@@ -1150,6 +1152,205 @@ def purge_jobs_command(
             f"({result['before_stage']} -> {result['after_stage']}; "
             f"queue {result['before_total']} -> {result['after_total']})"
         )
+
+
+def _name_pending_themes(db: Database, use_model: bool) -> dict[str, int]:
+    """Name themes that have no name yet: model for public samples when configured, else fallback."""
+    from edward.services.themes import (
+        MIN_PUBLIC_FOR_NAMING,
+        collect_naming_requests,
+        generate_theme_name,
+        store_theme_name,
+    )
+
+    with db.connection() as conn:
+        requests = collect_naming_requests(conn)
+    client = get_summarizer_client() if use_model else None
+    counts = {"model": 0, "fallback": 0, "failed": 0}
+    for req in requests:
+        name, description, source = req["fallback_name"], None, "fallback"
+        if client is not None and len(req["samples"]) >= MIN_PUBLIC_FOR_NAMING:
+            try:
+                payload = generate_theme_name(req, client)
+                name, description, source = payload.name, payload.description, "model"
+            except Exception as e:
+                counts["failed"] += 1
+                err_console.print(
+                    f"[yellow]Could not name theme {req['theme_id']} with the model ({e}); "
+                    "using a fallback name.[/yellow]"
+                )
+        with db.transaction() as conn:
+            if store_theme_name(
+                conn, req["theme_id"], name, description, source, req["member_ids"]
+            ):
+                counts[source] += 1
+    return counts
+
+
+@themes_app.callback()
+def themes_list_command(
+    ctx: typer.Context,
+    examples: int = typer.Option(3, "--examples", "-e", help="Example titles per theme"),
+    json_mode: bool = typer.Option(False, "--json", help="Output machine-readable JSON"),
+) -> None:
+    """List themes: named groups of related captures, largest first."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from edward.services.themes import list_themes
+
+    try:
+        db, _ = get_services()
+        with db.connection() as conn:
+            themes = list_themes(conn, examples=examples)
+    except Exception as e:
+        handle_error(f"Listing themes failed: {e}", exit_code=3, as_json=json_mode)
+    if json_mode:
+        output_json_payload({"themes": themes})
+    if not themes:
+        out_console.print("No themes yet. Run [cyan]edward themes refresh[/cyan] to build them.")
+        return
+    for t in themes:
+        out_console.print(f"[bold]{t['name']}[/bold] [dim]({t['count']}) {t['theme_id']}[/dim]")
+        for ex in t["examples"]:
+            out_console.print(f"  • {ex['title']}")
+
+
+@themes_app.command("refresh")
+def themes_refresh_command(
+    rebuild: bool = typer.Option(
+        False, "--rebuild", help="Regroup everything (keeps ids and names of surviving themes)"
+    ),
+    count: int | None = typer.Option(
+        None, "--count", "-k", min=1, help="Number of themes on rebuild"
+    ),
+    no_names: bool = typer.Option(False, "--no-names", help="Skip naming new themes"),
+    fallback_only: bool = typer.Option(
+        False, "--fallback-names", help="Name from topic labels only; never call a model"
+    ),
+    json_mode: bool = typer.Option(False, "--json", help="Output machine-readable JSON"),
+) -> None:
+    """Place new captures in their nearest theme (or build themes the first time), then name new themes."""
+    from edward.services.themes import refresh_themes
+
+    try:
+        db, _ = get_services()
+        with db.transaction() as conn:
+            result = refresh_themes(conn, rebuild=rebuild, k=count)
+        if not no_names:
+            result["named"] = _name_pending_themes(db, use_model=not fallback_only)
+    except (typer.Exit, SystemExit):
+        raise
+    except Exception as e:
+        handle_error(f"Theme refresh failed: {e}", exit_code=3, as_json=json_mode)
+    if json_mode:
+        output_json_payload(result)
+    if result["mode"] == "rebuild":
+        out_console.print(
+            f"[bold green]Themes rebuilt:[/bold green] {result['themes']} themes over "
+            f"{result['captures']} captures (kept {result['kept']}, new {result['created']}, "
+            f"removed {result['removed']})"
+        )
+    else:
+        out_console.print(
+            f"[bold green]Placed {result['assigned']} new captures[/bold green] in existing themes"
+        )
+    named = result.get("named")
+    if named and (named["model"] or named["fallback"]):
+        out_console.print(
+            f"Named {named['model']} themes with the model, {named['fallback']} with fallback names"
+        )
+
+
+@themes_app.command("show")
+def themes_show_command(
+    theme_id: str = typer.Argument(..., help="Theme ID"),
+    limit: int = typer.Option(50, "--limit", "-l", min=1, help="Maximum members to show"),
+    json_mode: bool = typer.Option(False, "--json", help="Output machine-readable JSON"),
+) -> None:
+    """Show a theme's members, most central first."""
+    from edward.services.themes import ThemeError, theme_members
+
+    try:
+        db, _ = get_services()
+        with db.connection() as conn:
+            payload = theme_members(conn, theme_id, limit=limit)
+    except (typer.Exit, SystemExit):
+        raise
+    except ThemeError as e:
+        handle_error(str(e), exit_code=1, as_json=json_mode)
+    except Exception as e:
+        handle_error(f"Showing theme failed: {e}", exit_code=3, as_json=json_mode)
+    if json_mode:
+        output_json_payload(payload)
+    out_console.print(f"[bold]{payload['name']}[/bold] [dim]({payload['count']})[/dim]")
+    if payload["description"]:
+        out_console.print(f"[dim]{payload['description']}[/dim]")
+    for m in payload["members"]:
+        out_console.print(f"  • {m['title']} [dim]{m['capture_id']}[/dim]")
+
+
+@themes_app.command("rename")
+def themes_rename_command(
+    theme_id: str = typer.Argument(..., help="Theme ID"),
+    name: str = typer.Argument(..., help="New name (kept through rebuilds)"),
+    json_mode: bool = typer.Option(False, "--json", help="Output machine-readable JSON"),
+) -> None:
+    """Give a theme your own name. Automated refreshes never overwrite it."""
+    from edward.services.themes import ThemeError, rename_theme
+
+    try:
+        db, _ = get_services()
+        with db.transaction() as conn:
+            payload = rename_theme(conn, theme_id, name)
+    except (typer.Exit, SystemExit):
+        raise
+    except ThemeError as e:
+        handle_error(str(e), exit_code=1, as_json=json_mode)
+    except Exception as e:
+        handle_error(f"Renaming theme failed: {e}", exit_code=3, as_json=json_mode)
+    if json_mode:
+        output_json_payload(payload)
+    out_console.print(f"[bold green]Renamed[/bold green] {theme_id} to {payload['name']}")
+
+
+@app.command("recent")
+def recent_command(
+    since: str = typer.Option(
+        "7d", "--since", "-s", help="today, yesterday, week, last-week, Nd (e.g. 7d), or YYYY-MM-DD"
+    ),
+    json_mode: bool = typer.Option(False, "--json", help="Output machine-readable JSON"),
+) -> None:
+    """What you saved recently, by day, summarised by theme."""
+    from edward.services.themes import parse_since, recent_digest
+
+    try:
+        start, end = parse_since(since)
+    except ValueError as e:
+        handle_error(str(e), exit_code=2, as_json=json_mode)
+    try:
+        db, _ = get_services()
+        with db.connection() as conn:
+            digest = recent_digest(conn, start, end)
+    except (typer.Exit, SystemExit):
+        raise
+    except Exception as e:
+        handle_error(f"Recent digest failed: {e}", exit_code=3, as_json=json_mode)
+    if json_mode:
+        output_json_payload(digest)
+    if not digest["total"]:
+        out_console.print(f"Nothing saved since {start:%a %b %-d}.")
+        return
+    parts = ", ".join(f"{t['count']} in {t['name']}" for t in digest["themes"][:4])
+    more = len(digest["themes"]) - 4
+    tail = f", and {more} more themes" if more > 0 else ""
+    out_console.print(
+        f"[bold]{digest['total']} saved since {start:%a %b %-d}:[/bold] {parts}{tail}"
+    )
+    for day in digest["days"]:
+        out_console.print(f"\n[bold cyan]{day['label']}[/bold cyan] [dim]({day['count']})[/dim]")
+        for item in day["items"]:
+            posted = " [dim](posted)[/dim]" if item["date_basis"] == "posted" else ""
+            out_console.print(f"  • {item['title']} [dim]— {item['theme_name']}[/dim]{posted}")
 
 
 @app.command("status")

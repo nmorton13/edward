@@ -165,6 +165,35 @@ def create_mcp_server(
                 group_by=group_by,
             )
 
+    @server.tool(name="edward_themes")
+    def edward_themes(examples: int = 3) -> dict[str, Any]:
+        """List the library's themes: named groups of related captures, largest first.
+
+        A quick map of what the library contains. Each theme has an id, name, optional
+        description, capture count, and a few example titles. Read-only; themes are built
+        and named by `edward themes refresh`.
+        """
+        from edward.services.themes import list_themes
+
+        database, _ = _get_services(db, blob_store)
+        with database.connection() as conn:
+            return {"themes": list_themes(conn, examples=examples)}
+
+    @server.tool(name="edward_recent")
+    def edward_recent(since: str = "7d") -> dict[str, Any]:
+        """What was saved recently, grouped by day and summarised by theme.
+
+        `since` accepts today, yesterday, week, last-week, Nd (e.g. 7d) or YYYY-MM-DD.
+        Bulk-imported X bookmarks are dated by their post date (date_basis 'posted');
+        everything else by when it was saved (date_basis 'saved'). Read-only.
+        """
+        from edward.services.themes import parse_since, recent_digest
+
+        start, end = parse_since(since)
+        database, _ = _get_services(db, blob_store)
+        with database.connection() as conn:
+            return recent_digest(conn, start, end)
+
     @server.tool(name="edward_show")
     def edward_show(object_id: str) -> dict[str, Any]:
         """Inspect the full details of any object (resource, capture, chunk, or finding) by ID.

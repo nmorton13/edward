@@ -202,6 +202,22 @@ Exit codes:
 - `1`: Unknown item ID or item has no embedding.
 - `2`: Bad options (invalid `--type`, non-positive `--limit`, or unknown project).
 
+### 2.5b Orienting in a Library (`edward themes`, `edward recent`)
+
+Before searching an unfamiliar library, an agent can read its themes: named groups of related captures, largest first. Themes are derived from embeddings and are read-only for agents except through `themes refresh` and `themes rename`.
+
+```bash
+edward themes --json            # {"themes": [{"theme_id", "name", "description", "name_source", "count", "examples": [{"capture_id", "title"}]}]}
+edward themes show <theme_id> --json
+edward recent --since 7d --json # {"since", "until", "total", "themes": [{"theme_id", "name", "count"}], "days": [{"date", "label", "count", "items": [...]}]}
+```
+
+`name_source` is `model`, `fallback` (topic labels) or `human`. A human name is never overwritten by automated work. In `recent`, each item carries `date_basis`: `saved` (when it entered Edward) or `posted` (post date, used for bulk backfills whose save date is only the import date). Agents should mention the basis when reporting when something was saved.
+
+`edward themes refresh` places new captures in their nearest theme without moving others and names new themes. Naming calls the configured summarizer model with titles and summaries of public captures only; private captures are never sent.
+
+Exit codes: `0` success; `1` unknown theme id or empty name; `2` unrecognised `--since`; `3` fatal error.
+
 ### 2.6 Exporting Evidence Packets (`edward export --packet`)
 
 For synthesis tasks, agents retrieve bounded evidence packets conforming to [`schemas/evidence-packet-v1.json`](../schemas/evidence-packet-v1.json):
@@ -318,6 +334,10 @@ Edward exposes a native **Model Context Protocol (MCP)** server via `edward mcp`
   - Parameters: `query: str`, `limit: int = 20`, `topic: str | None`, `form: str | None`, `intent: str | None`, `project: str | None`
 - **`edward_similar`**: Find items similar in meaning to an existing capture, resource, or finding using its stored vector embedding.
   - Parameters: `object_id: str`, `limit: int = 20`, `type: str | None`, `exclude_project: str | None`
+- **`edward_themes`**: Named groups of related captures with counts and example titles.
+  - Parameters: `examples: int = 3`
+- **`edward_recent`**: Recent saves by day, summarised by theme.
+  - Parameters: `since: str = "7d"` (today, yesterday, week, last-week, Nd, YYYY-MM-DD)
 - **`edward_ask`**: Run hybrid retrieval in deterministic Evidence Packet mode (the MCP tool always disables model synthesis). Returns candidate evidence items, source metadata, and supporting passages.
   - Parameters: `query: str`, `limit: int = 50`, `project: str | None = None`
 - **`edward_show`**: Retrieve complete object details (resource, capture, or finding) by ID, including clean text, source URL, labels, intents, and human annotations.

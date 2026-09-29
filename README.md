@@ -157,6 +157,29 @@ uv run edward ask "Summarize the key findings on transformer latency"
 
 When an answer model is configured and active, `ask` verifies every citation against the underlying source text. If citations cannot be verified, it cleanly falls back to returning the retrieved evidence packet rather than hallucinating.
 
+### Themes and Recent Saves (`themes`, `recent`)
+
+Edward groups related captures into **themes** using their embeddings, with no model needed. Once built, themes stay put: new captures join their nearest theme and nothing else moves. `--rebuild` regroups everything and keeps the ids and names of themes that survive.
+
+```bash
+# Build themes the first time; afterwards, place new captures and name any new themes
+uv run edward themes refresh
+
+# List themes with example titles, or look inside one
+uv run edward themes
+uv run edward themes show thm_...
+
+# Your own name wins over automated naming, including after rebuilds
+uv run edward themes rename thm_... "Data centers & rates"
+
+# What you saved recently, by day, summarised by theme
+uv run edward recent --since yesterday   # also: today, week, last-week, 7d, 2026-09-01
+```
+
+Theme names come from the configured summarizer model (`EDWARD_SUMMARIZER_*`), which reads the titles and summaries of a theme's most central **public** items only. Gmail, personal notes and local documents are never sent. Without a model, or with `--fallback-names`, themes are named from their topic labels.
+
+`recent` dates items by when you saved them. Captures from a bulk backfill (an import run of more than 50 items) are dated by the post's own date instead, since their save date is only the import date; these are marked `(posted)`.
+
 ---
 
 ## Projects: From Research to Writing
@@ -375,7 +398,8 @@ Add Edward to your `claude_desktop_config.json` or Antigravity MCP configuration
 
 | Group | Tools | What it does |
 | --- | --- | --- |
-| **Discovery & Retrieval** | `edward_search`<br>`edward_ask`<br>`edward_show`<br>`edward_export_packet` | Exact FTS5 search, high-recall evidence packets with locators and citations, full object inspection, and JSON evidence export. |
+| **Discovery & Retrieval** | `edward_search`<br>`edward_similar`<br>`edward_ask`<br>`edward_show`<br>`edward_export_packet` | Exact FTS5 search, similar-in-meaning items, high-recall evidence packets with locators and citations, full object inspection, and JSON evidence export. |
+| **Orientation** | `edward_themes`<br>`edward_recent` | Named groups of related captures, and recent saves by day summarised by theme. |
 | **Ingest & Capture** | `edward_add`<br>`edward_import_research`<br>`edward_sync` | Quick capture of notes/URLs/files, bulk Markdown or JSON research report import, and read-only source archive synchronization. |
 | **Human Annotations & Intent** | `edward_annotate`<br>`edward_list_intents`<br>`edward_accept_intent`<br>`edward_remove_intent` | Attach notes, labels, or intent flags (`essay-seed`, `deep-dive`, `counterevidence`) to objects, review intent taxonomy, and manage human review decisions. |
 | **Writing Workspaces** | `edward_project_list`<br>`edward_project_create`<br>`edward_project_context`<br>`edward_project_add_evidence`<br>`edward_project_remove_evidence`<br>`edward_project_add_note`<br>`edward_project_propose_outline`<br>`edward_project_accept_outline`<br>`edward_project_delete` | Full writing project lifecycle: track evidence with roles (`supporting`, `counterargument`, `qualification`), log research questions and gaps, and manage versioned evidence-linked outlines. |

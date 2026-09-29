@@ -20,6 +20,8 @@ def test_mcp_server_registration(test_db: Database, test_blob_store: BlobStore) 
             "edward_ask",
             "edward_search",
             "edward_similar",
+            "edward_themes",
+            "edward_recent",
             "edward_show",
             "edward_export_packet",
             "edward_add",
