@@ -78,9 +78,13 @@ def create_mcp_server(
         server_name,
         instructions=(
             "Edward is a personal research memory and writing workspace. "
-            "Use these tools to search saved research (exact lexical and semantic hybrid), "
-            "retrieve structured Evidence Packets with citations, capture links and thoughts, "
-            "manage intent facets, and organize evidence into writing projects with validated outlines."
+            "Orient with edward_themes (named groups of related captures) and edward_recent "
+            "(recent saves by day). Search saved research (exact lexical and semantic hybrid), "
+            "find related items with edward_similar, and retrieve structured Evidence Packets "
+            "with citations. Capture links and thoughts, manage intent facets, and organize "
+            "evidence into writing projects with validated outlines; edward_project_suggest "
+            "finds candidate evidence by meaning, judged against the project's brief. "
+            "Suggestions are candidates for the user to accept or reject, never decisions."
         ),
     )
 

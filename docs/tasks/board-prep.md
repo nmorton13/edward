@@ -11,6 +11,18 @@ work never overwrites `user_note`, human labels, intents, or `review_state`.
 
 Suggested order: 1 → 2 → 4, with 3 whenever a model is chosen and 5 at any time.
 
+**Status (2026-09-29): all five done**, plus follow-ups built on them:
+
+- `similar` excludes the source item's own family and supports `--group-by capture`.
+- Summaries carry provenance (`summary_source`, migration 006); the summarize stage skips
+  short texts and near-duplicate sibling pages, and the full library backfill has run.
+- Provider rate limits no longer consume job attempts.
+- Themes and `edward recent` (migration 007).
+- Project candidates by meaning, judged by Jev, with automatic checks of new captures
+  (`edward project suggest`, migration 008).
+
+Next: the board app itself.
+
 ---
 
 ## Task 1: Decode HTML entities and strip X page-title wrappers [DONE]

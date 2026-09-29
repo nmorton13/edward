@@ -39,9 +39,11 @@ If you use both, the division of labor is clean:
 - **Dual-Engine Retrieval**:
   - **Exact Lexical Search**: Powered by SQLite FTS5 (`unicode61` tokenizer) for finding exact phrases, names, and code snippets.
   - **Local Semantic Search**: FastEmbed (`BAAI/bge-small-en-v1.5`) running entirely in local Python for conceptual and thematic retrieval.
+  - **Related Items**: `similar` finds saved items close in meaning to any capture, page, or finding.
+- **Themes and Recent Saves**: Related captures are grouped into named themes that stay put as you save more, and `recent` shows what you saved yesterday or last week, summarised by theme.
 - **Intent Facets**: Answers *why* you kept something (`essay-seed`, `deep-dive`, `counterevidence`, `fact-check`, `tool-eval`, `inspiration`, `reference`, `try-later`). Intents are user-level facets for filtering, never opaque weights that distort search rankings.
 - **Taxonomic Classification**: Evaluates topics (`ai/local-models`, `software/systems`, `crypto/bitcoin`, `economics/austrian`, `infrastructure/energy-grid`, `creative-tech`, `gaming`, `philosophy`, etc.) and signals (`cool-project`, `field-report`, `benchmark`, `tutorial`, `warning`, `data-source`).
-- **Writing Projects & Syntheses**: Group sources into dedicated writing workspaces, assign explicit roles (`supporting`, `counterevidence`, `qualification`), track open research gaps and questions, and generate cited outlines.
+- **Writing Projects & Syntheses**: Group sources into dedicated writing workspaces, assign explicit roles (`supporting`, `counterevidence`, `qualification`), track open research gaps and questions, and generate cited outlines. `project suggest` finds evidence you already saved by meaning, judged against the project's question, and new saves are checked against every active project as they are processed.
 - **Agent and Human Pair**: A rock-solid CLI with `--json` output where machine outputs are strictly JSON on `stdout` and logs go to `stderr`, making it trivial for agents (Codex, Claude, Antigravity) to research and draft with you.
 
 ---
@@ -258,6 +260,7 @@ The default posture requires no external APIs or local LLM runtimes:
 - Deterministic finding extraction (sentences, quotes, claims).
 - FTS5 full-text indexing and querying.
 - FastEmbed vector embeddings (`BAAI/bge-small-en-v1.5` running locally in Python).
+- `similar`, theme grouping, `recent`, and ranking project candidates by meaning (all embedding-based).
 - Projects, outline proposals (`--no-model`), and evidence packet exports (`--no-model`).
 - Deterministic question answering for counts, dates, and entity lookups.
 
@@ -282,6 +285,31 @@ EDWARD_ANSWER_LOCATION=local
 ```
 
 Setting `EDWARD_ANSWER_BASE_URL` alone does nothing: model use strictly requires `EDWARD_ANSWERER_MODE`.
+
+### Opting In to Summaries and Theme Names (Off by Default)
+
+A small model can write 2–3 sentence summaries of saved pages and name themes. It is off until you set `EDWARD_SUMMARIZER_MODE`:
+
+```bash
+EDWARD_SUMMARIZER_MODE=hosted            # hosted | local | enabled | disabled
+EDWARD_SUMMARIZER_PROVIDER=openrouter
+EDWARD_SUMMARIZER_MODEL=deepseek/deepseek-v4.1-flash
+# EDWARD_SUMMARIZER_BASE_URL / _API_KEY / _LOCATION / _TIMEOUT fall back to the EDWARD_ANSWER_* values
+```
+
+```bash
+uv run edward process --stage summarize --limit 20   # try a small batch first
+uv run edward process --stage summarize --limit 1000
+```
+
+- Summaries from imported research bundles and your own summaries are never replaced.
+- Texts under 300 characters are skipped (the text already is the summary), as are pages whose words are mostly contained in a longer page of the same capture, such as a link that resolves back to the same post.
+- The privacy check runs before anything is sent: Gmail, personal notes, and local documents are refused unless their `EDWARD_HOSTED_*` setting allows them.
+- If the provider rate-limits a request (common with free model tiers), `process` stops early and re-queues the job without using one of its retries. Run it again later.
+
+### Judging Project Candidates
+
+`edward project suggest` and the check that runs after `edward process` rank captures by meaning locally, then ask the configured Jev classifier (`EDWARD_CLASSIFIER_PROVIDER`) one yes/no question per top candidate: is this relevant evidence for the project's brief? Only public content is sent. Without a classifier, only the closest matches by meaning are suggested. A first pass over a library of about 900 pages judges around 40 candidates per project.
 
 ### Classification and Privacy Guarantees
 
@@ -354,6 +382,12 @@ Edward reads environment variables and a `.env` file from the current directory 
 | `EDWARD_ANSWER_API_KEY` | API key for an opted-in answer model | — |
 | `EDWARD_ANSWER_PROVIDER` | Answer provider identifier | `llm` |
 | `EDWARD_ANSWER_TIMEOUT` | Per-request timeout in seconds | `120` |
+| `EDWARD_SUMMARIZER_MODE` | Opt-in summarizer for resource summaries and theme names (`hosted`, `local`, `enabled`, `disabled`) | `disabled` |
+| `EDWARD_SUMMARIZER_PROVIDER` | Summarizer provider (e.g. `openrouter`) | `EDWARD_ANSWER_PROVIDER` |
+| `EDWARD_SUMMARIZER_MODEL` | Summarizer model name | `EDWARD_ANSWER_MODEL` |
+| `EDWARD_SUMMARIZER_BASE_URL` | Summarizer API base URL | provider default |
+| `EDWARD_SUMMARIZER_API_KEY` | Summarizer API key | `EDWARD_ANSWER_API_KEY` / `OPENROUTER_API_KEY` |
+| `EDWARD_SUMMARIZER_TIMEOUT` | Per-request timeout in seconds | `60` |
 | `EDWARD_CLASSIFIER_PROVIDER` | Taxonomic classifier provider (`disabled`, `typesafe`, `openrouter`, `local`, `dry-run`) | `disabled` |
 | `EDWARD_CLASSIFIER_MODEL` | Classifier model name | Provider-specific |
 | `EDWARD_CLASSIFIER_BASE_URL` | Classifier API base URL | Provider-specific |
@@ -389,7 +423,7 @@ See:
 
 Edward includes a native **Model Context Protocol (MCP)** server for AI coding assistants and desktop agents (Claude Desktop, Antigravity, Cursor, Codex).
 
-Instead of parsing CLI flags or running shell commands, connected agents can invoke Edward's research memory, discovery, project workspaces, and capture capabilities as 23 strongly typed tools:
+Instead of parsing CLI flags or running shell commands, connected agents can invoke Edward's research memory, discovery, project workspaces, and capture capabilities as 27 strongly typed tools:
 
 ```bash
 uv run edward mcp --transport stdio
@@ -418,7 +452,7 @@ Add Edward to your `claude_desktop_config.json` or Antigravity MCP configuration
 | **Orientation** | `edward_themes`<br>`edward_recent` | Named groups of related captures, and recent saves by day summarised by theme. |
 | **Ingest & Capture** | `edward_add`<br>`edward_import_research`<br>`edward_sync` | Quick capture of notes/URLs/files, bulk Markdown or JSON research report import, and read-only source archive synchronization. |
 | **Human Annotations & Intent** | `edward_annotate`<br>`edward_list_intents`<br>`edward_accept_intent`<br>`edward_remove_intent` | Attach notes, labels, or intent flags (`essay-seed`, `deep-dive`, `counterevidence`) to objects, review intent taxonomy, and manage human review decisions. |
-| **Writing Workspaces** | `edward_project_list`<br>`edward_project_create`<br>`edward_project_context`<br>`edward_project_add_evidence`<br>`edward_project_remove_evidence`<br>`edward_project_add_note`<br>`edward_project_propose_outline`<br>`edward_project_accept_outline`<br>`edward_project_delete` | Full writing project lifecycle: track evidence with roles (`supporting`, `counterargument`, `qualification`), log research questions and gaps, and manage versioned evidence-linked outlines. |
+| **Writing Workspaces** | `edward_project_list`<br>`edward_project_create`<br>`edward_project_context`<br>`edward_project_suggest`<br>`edward_project_add_evidence`<br>`edward_project_remove_evidence`<br>`edward_project_add_note`<br>`edward_project_propose_outline`<br>`edward_project_accept_outline`<br>`edward_project_delete` | Full writing project lifecycle: suggest candidate evidence by meaning, track evidence with roles (`supporting`, `counterargument`, `qualification`), log research questions and gaps, and manage versioned evidence-linked outlines. |
 | **Maintenance & Operations** | `edward_status`<br>`edward_process`<br>`edward_doctor` | Queue depth inspection, background job execution, and SQLite/blob store integrity diagnostics. |
 
 ---

@@ -141,6 +141,14 @@ For X, pending work can include classification, local embedding, and fetch/extra
 
 `edward process` runs pending jobs, up to 10 per invocation by default (use `--limit` to select a larger batch). Processing fetches linked public URLs, extracts clean text, computes local vector embeddings, runs OCR on image attachments, and evaluates taxonomic classification. Agents should follow through on safe, additive ingestion and scope work to new captures with `--capture-id` when possible; an unscoped run can process unrelated pending work. Before hosted-model dispatch, inspect the content classes that will be processed and obtain explicit user confirmation before sending private content (Gmail, personal notes, or local documents), even if local settings permit it. Attachment downloads remain opt-in where the source adapter requires that option. Report what completed and what is searchable.
 
+`process --json` returns `{"completed", "failed", "pending", "lost_lease", "remaining_pending", "skipped", "rate_limited", "project_matches"}`:
+
+- `completed` includes summarize jobs finished without a model call; `skipped` counts them by reason: `short` (under 300 characters) or `duplicate` (words mostly contained in a longer page of the same capture).
+- `rate_limited` is `1` when a provider returned HTTP 429. The run stops at that point and the job returns to the queue after the provider's delay without consuming an attempt. Report it and run again later rather than retrying in a loop.
+- `project_matches` lists candidates suggested for active projects from newly embedded captures (see §2.8).
+
+The `summarize` stage only runs when `EDWARD_SUMMARIZER_MODE` is set, writes `summary_source = model`, and never replaces `bundle` or `human` summaries.
+
 ### 2.5 Searching and Retrieving Evidence (`edward search`)
 
 Agents can perform lexical (FTS5) and semantic retrieval:
@@ -182,7 +190,11 @@ edward similar <id> \
   --type resource \
   --exclude-project "local-ai" \
   --json
+
+edward similar <id> --group-by capture --json   # one hit per capture, scored by its best member
 ```
+
+The source item's own family (its captures, their pages, and their findings) is always excluded. With `--group-by capture`, each hit also carries `matched_object_type`, `matched_object_id`, and `matched_title` for the member that matched, and `--limit` counts captures.
 
 **JSON Output Format:**
 ```json
@@ -330,7 +342,7 @@ Edward exposes a native **Model Context Protocol (MCP)** server via `edward mcp`
 
 - **Memory, Not a Mind**: Edward acts as an evidence packet engine and durable research memory. It does not synthesize prose or draft essays inside the MCP server. Tools such as `edward_ask` return high-recall evidence packets with locators, citations, and source metadata, allowing the calling agent to perform the actual reasoning, sorting, and synthesis.
 - **Typed Parameter Contracts**: Every tool defines strict Pydantic input schemas and returns JSON structured outputs.
-- **MCP tool coverage**: The server exposes 23 typed tools for common capture, retrieval, project, and status workflows. It is a useful subset of the CLI, not full CLI parity; use `edward --help` for classification, repair, backup, purge, and other CLI-only operations.
+- **MCP tool coverage**: The server exposes 27 typed tools for common capture, retrieval, project, and status workflows. It is a useful subset of the CLI, not full CLI parity; use `edward --help` for classification, repair, backup, purge, and other CLI-only operations.
 
 ### 4.2 Tool Catalog
 
@@ -338,7 +350,7 @@ Edward exposes a native **Model Context Protocol (MCP)** server via `edward mcp`
 - **`edward_search`**: Exact lexical full-text search (SQLite FTS5 `unicode61`) with optional taxonomic topic, form, intent, or project filters.
   - Parameters: `query: str`, `limit: int = 20`, `topic: str | None`, `form: str | None`, `intent: str | None`, `project: str | None`
 - **`edward_similar`**: Find items similar in meaning to an existing capture, resource, or finding using its stored vector embedding.
-  - Parameters: `object_id: str`, `limit: int = 20`, `type: str | None`, `exclude_project: str | None`
+  - Parameters: `object_id: str`, `limit: int = 20`, `type: str | None`, `exclude_project: str | None`, `group_by: str | None` (`"capture"`)
 - **`edward_project_suggest`**: Suggest candidate evidence for a project by meaning, judged against its brief.
   - Parameters: `project_id: str`, `limit: int = 40`, `full: bool = False`, `judge: bool = True`
 - **`edward_themes`**: Named groups of related captures with counts and example titles.
@@ -393,7 +405,7 @@ Edward exposes a native **Model Context Protocol (MCP)** server via `edward mcp`
 #### Maintenance & Queue
 - **`edward_status`**: Report processing queue depth, job status counts, and total corpus counts.
   - Parameters: None
-- **`edward_process`**: Execute pending background extraction, classification, and local embedding jobs.
+- **`edward_process`**: Execute pending background extraction, classification, summarize, and local embedding jobs, then check newly embedded captures against active projects (`project_matches`).
   - Parameters: `limit: int = 50`
 - **`edward_doctor`**: Run system diagnostics verifying SQLite integrity, migrations, and blob store health.
   - Parameters: None
@@ -462,4 +474,4 @@ Read the existing configuration file (or initialize `{ "mcpServers": {} }` if mi
 The agent should test the configuration:
 1. Run `uv run edward mcp --help` to confirm CLI entrypoint operates.
 2. Run `uv run edward doctor --json` to confirm database and blob health.
-3. Inform the user that restarting their client application will activate the 23 tools.
+3. Inform the user that restarting their client application will activate the 27 tools.
