@@ -90,3 +90,8 @@ ignore = [
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-v --strict-markers"
+
+[tool.uv]
+# fastembed pins pillow<13, but 11.x-12.x have open security advisories fixed in 13.0.
+# edward only uses text embeddings, so fastembed's image path is never exercised.
+override-dependencies = ["pillow>=13.0.0"]
